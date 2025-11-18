@@ -46,7 +46,7 @@ jobs:
             --name "${{ env.CONTAINER_APP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --image "${{ env.IMAGE_NAME }}" \
-            --revision-suffix "rev$(date +%s)"
+            --revision-suffix "rev${{ github.sha }}"
 
       - name: Show ingress
         run: |
