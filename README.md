@@ -112,6 +112,36 @@ python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
 
 Use `tests/websocket_client.py` to hold sessions locally against `ws://localhost:8080/ws`.
 
+## Environment Configuration
+
+`.env.example` lists the variables the FastAPI proxy expects when running outside Container Apps:
+
+```bash
+AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT=gpt4o-realtime
+AZURE_OPENAI_API_KEY=<api-key>
+AZURE_OPENAI_API_VERSION=2024-08-06
+PORT=8080
+CONTAINER_APP_REVISION=local
+```
+
+Copy it to `.env` (git-ignored) and fill in real values for local smoke tests.
+
+## GitHub Actions Deployment
+
+This repo ships with `.github/workflows/deploy.yml`, which builds a container image, pushes it to Azure Container Registry, and updates your Container App. Authentication is handled by the [Configure Azure Settings](https://github.com/marketplace/configure-azure-settings) GitHub App, so no `azure/login` step is required.
+
+1. Install the Configure Azure Settings app on this repository and link it to your subscription/resource group.
+2. Define repository **variables** (Settings → Secrets and Variables → Actions → Variables):
+  - `AZURE_CONTAINER_REGISTRY` (e.g., `gptrtacr`)
+  - `RESOURCE_GROUP` (e.g., `rg-gptrealtimewebsocket-demo-swedencentral-001`)
+  - `CONTAINER_APP_NAME` (e.g., `gptrt-ws`)
+3. Push to `main` (or run the workflow manually via *Run workflow*). The pipeline will:
+  - `az acr login`
+  - `docker build` and `docker push`
+  - `az containerapp update` with a new revision suffix
+  - Emit the Container App ingress FQDN for quick verification
+
 ## Observe Logs (SIGTERM/SIGKILL)
 
 Container Apps streams stdout/stderr to Log Analytics. Tail in real time:

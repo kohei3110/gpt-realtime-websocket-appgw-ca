@@ -110,6 +110,19 @@ python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
 
 ローカルの `ws://localhost:8080/ws` に対して `tests/websocket_client.py` を実行すれば、接続ハンドリングを確認できます。
 
+## 環境変数テンプレート
+
+ローカル実行時に必要な値は `.env.example` にまとめています。以下を参考に `.env` を作成し、Git 追跡から除外されたまま利用してください。
+
+```bash
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT=gpt4o-realtime
+AZURE_OPENAI_API_KEY=<api-key>
+AZURE_OPENAI_API_VERSION=2024-08-06
+PORT=8080
+CONTAINER_APP_REVISION=local
+```
+
 ## ログと SIGTERM の観測
 
 Container Apps の stdout/stderr は Log Analytics に送られます。リアルタイムで確認する場合:
@@ -153,6 +166,17 @@ python tests/websocket_client.py \
 ```
 
 5 分間接続を維持しながらトラフィック分割を切り替えることで、WebSocket が切断されないかを確認できます。
+
+## GitHub Actions でのデプロイ
+
+`.github/workflows/deploy.yml` を使うと、Docker イメージのビルド/プッシュと Container Apps 更新を自動化できます。すでに [Configure Azure Settings](https://github.com/marketplace/configure-azure-settings) アプリをこのリポジトリにインストールしている前提なので、`azure/login` アクションは不要です。
+
+1. Configure Azure Settings アプリで対象サブスクリプション/リソースグループへのアクセスを許可。
+2. リポジトリの **Variables** (Settings → Secrets and Variables → Actions → Variables) に以下を登録:
+  - `AZURE_CONTAINER_REGISTRY` (例: `gptrtacr`)
+  - `RESOURCE_GROUP` (例: `rg-gptrealtimewebsocket-demo-swedencentral-001`)
+  - `CONTAINER_APP_NAME` (例: `gptrt-ws`)
+3. `main` ブランチへ push すると、ワークフローが自動で ACR へのログイン / `docker build` / `docker push` / `az containerapp update` を実行し、最後に公開 FQDN を表示します。手動実行したい場合は Actions 画面で `Run workflow` を押してください。
 
 ## 次のステップ
 

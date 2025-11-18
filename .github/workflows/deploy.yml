@@ -1,0 +1,57 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AZURE_CONTAINER_REGISTRY: ${{ vars.AZURE_CONTAINER_REGISTRY }}
+  RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+  CONTAINER_APP_NAME: ${{ vars.CONTAINER_APP_NAME }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker login to ACR
+        run: |
+          az acr login --name "${{ env.AZURE_CONTAINER_REGISTRY }}"
+
+      - name: Build and push image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_NAME="${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/gpt-realtime-ws:${IMAGE_TAG::7}"
+          docker build -t "$IMAGE_NAME" .
+          docker push "$IMAGE_NAME"
+          echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
+
+      - name: Deploy to Container Apps
+        run: |
+          az containerapp update \
+            --name "${{ env.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --image "${{ env.IMAGE_NAME }}" \
+            --revision-suffix "rev$(date +%s)"
+
+      - name: Show ingress
+        run: |
+          FQDN=$(az containerapp show \
+            --name "${{ env.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "::notice::Container App reachable at https://${FQDN}"
