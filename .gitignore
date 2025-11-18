@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.venv/
+env/
+venv/
+
+.env
+.env.*
+*.env
+
+coverage.xml
+htmlcov/
+
+*.log
+
+# Azure deployment artifacts
+*.parameters.json
+*.bicepparam
+.azure/
+
+# Editor clutter
+.DS_Store
+.vscode/
