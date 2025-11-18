@@ -10,7 +10,6 @@ env/
 venv/
 
 .env
-.env.*
 *.env
 
 coverage.xml
