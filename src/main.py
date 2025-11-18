@@ -21,7 +21,7 @@ logger = logging.getLogger("ws-proxy")
 
 APP_REVISION = os.getenv("CONTAINER_APP_REVISION", "local")
 REALTIME_SUBPROTOCOL = "oai.realtime.v1"
-DEFAULT_API_VERSION = "2024-08-06"
+DEFAULT_API_VERSION = "2024-10-01-preview"
 
 
 def _utc_now() -> str:
