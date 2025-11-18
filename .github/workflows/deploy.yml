@@ -27,6 +27,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Azure CLI login via OIDC
+        run: |
+          az login \
+            --service-principal \
+            --username ${{ secrets.AZURE_CLIENT_ID }} \
+            --tenant ${{ secrets.AZURE_TENANT_ID }} \
+            --federated-token $(curl -sLS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" -H "Accept: application/json; api-version=2.0" | jq -r '.value')
+
       - name: Docker login to ACR
         run: |
           az acr login --name "${{ env.AZURE_CONTAINER_REGISTRY }}"
