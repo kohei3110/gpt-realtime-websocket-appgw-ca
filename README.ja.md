@@ -116,9 +116,9 @@ python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
 
 ```bash
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT=gpt4o-realtime
+AZURE_OPENAI_DEPLOYMENT=gpt-realtime
 AZURE_OPENAI_API_KEY=<api-key>
-AZURE_OPENAI_API_VERSION=2024-08-06
+AZURE_OPENAI_API_VERSION=2025-08-28
 PORT=8080
 CONTAINER_APP_REVISION=local
 ```
