@@ -101,6 +101,17 @@ az containerapp secret set \
   --secrets azure-openai-api-key="$AZURE_OPENAI_KEY"
 ```
 
+Bind the secret to the runtime environment variable so the proxy can read `AZURE_OPENAI_API_KEY`:
+
+```bash
+az containerapp update \
+  --name "$PREFIX-ws" \
+  --resource-group "$RESOURCE_GROUP" \
+  --set-env-vars AZURE_OPENAI_API_KEY=secretref:azure-openai-api-key
+```
+
+> When you pass `openAiApiKey` to `infra/main.bicep`, the template performs both steps (secret creation + env var binding) automatically. Only run the CLI commands above if you skipped that parameter during deployment.
+
 ## Local Testing
 
 ```bash

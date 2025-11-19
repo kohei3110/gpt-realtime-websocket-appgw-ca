@@ -99,6 +99,17 @@ az containerapp secret set \
   --secrets azure-openai-api-key="$AZURE_OPENAI_KEY"
 ```
 
+続いて、同じシークレットを `AZURE_OPENAI_API_KEY` 環境変数に紐づけます。
+
+```bash
+az containerapp update \
+  --name "$PREFIX-ws" \
+  --resource-group "$RESOURCE_GROUP" \
+  --set-env-vars AZURE_OPENAI_API_KEY=secretref:azure-openai-api-key
+```
+
+> `infra/main.bicep` に `openAiApiKey` パラメーターを渡した場合は、デプロイ時にシークレット作成と環境変数設定が両方行われます。Bicep にキーを渡していない場合のみ、上記 CLI で後付けしてください。
+
 ## ローカル実行
 
 ```bash
