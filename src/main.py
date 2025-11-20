@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import json
 import os
@@ -37,8 +38,10 @@ INDEX_HTML = """
     <pre id="response"></pre>
     <p id="transcript"></p>
     <p id="audio">Audio bytes: 0</p>
+    <audio id="player" hidden></audio>
     <p id="status"></p>
     <script>
+      const SAMPLE_RATE = 24000;
       const statusEl = document.getElementById('status');
       const responseEl = document.getElementById('response');
       const transcriptEl = document.getElementById('transcript');
@@ -48,6 +51,53 @@ INDEX_HTML = """
       const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
       const socket = new WebSocket(`${protocol}://${location.host}/chat`);
       let audioBytes = 0;
+      let audioCtx;
+      let audioPlayhead = 0;
+
+      function ensureAudioContext() {
+        if (!audioCtx) {
+          audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        return audioCtx;
+      }
+
+      window.addEventListener('click', () => ensureAudioContext(), { once: true });
+
+      function playPcmChunk(base64Chunk) {
+        if (!base64Chunk) {
+          return;
+        }
+        const ctx = ensureAudioContext();
+        const binary = atob(base64Chunk);
+        const buffer = new ArrayBuffer(binary.length);
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+
+        const sampleCount = bytes.length / 2;
+        const floatSamples = new Float32Array(sampleCount);
+        const view = new DataView(buffer);
+        for (let i = 0; i < sampleCount; i += 1) {
+          const sample = view.getInt16(i * 2, true);
+          floatSamples[i] = sample / 32768;
+        }
+
+        const audioBuffer = ctx.createBuffer(1, sampleCount, ctx.sampleRate);
+        audioBuffer.getChannelData(0).set(floatSamples);
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+        const now = ctx.currentTime;
+        if (audioPlayhead < now) {
+          audioPlayhead = now;
+        }
+        source.start(audioPlayhead);
+        audioPlayhead += audioBuffer.duration;
+      }
 
       socket.addEventListener('open', () => {
         statusEl.textContent = 'Connected';
@@ -75,6 +125,7 @@ INDEX_HTML = """
           case 'audio-chunk':
             audioBytes += (data.bytes || 0);
             audioEl.textContent = `Audio bytes: ${audioBytes}`;
+            playPcmChunk(data.value);
             break;
           case 'status':
             statusEl.textContent = data.message;
@@ -185,8 +236,11 @@ async def _relay_to_azure(websocket: WebSocket, user_text: str) -> None:
                 if event.type == 'response.output_text.delta':
                     await websocket.send_json({'type': 'text-delta', 'value': event.delta})
                 elif event.type == 'response.output_audio.delta':
-                    chunk = event.delta or ''
-                    await websocket.send_json({'type': 'audio-chunk', 'value': chunk, 'bytes': len(chunk)})
+                  chunk = event.delta or ''
+                  if not chunk:
+                    continue
+                  raw_bytes = base64.b64decode(chunk)
+                  await websocket.send_json({'type': 'audio-chunk', 'value': chunk, 'bytes': len(raw_bytes)})
                 elif event.type == 'response.output_audio_transcript.delta':
                     await websocket.send_json({'type': 'transcript-delta', 'value': event.delta})
                 elif event.type == 'response.output_text.done':
