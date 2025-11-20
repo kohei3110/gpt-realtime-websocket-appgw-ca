@@ -44,7 +44,7 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           IMAGE_NAME="${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/gpt-realtime-ws:${IMAGE_TAG::7}"
-          docker build -t "$IMAGE_NAME" .
+          docker build --no-cache -t "$IMAGE_NAME" .
           docker push "$IMAGE_NAME"
           echo "IMAGE_NAME=$IMAGE_NAME" >> "$GITHUB_ENV"
 
