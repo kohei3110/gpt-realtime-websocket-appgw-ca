@@ -1,175 +1,288 @@
-import asyncio
-import logging
+import base64
+import contextlib
+import json
 import os
-import signal
-import uuid
-from datetime import datetime, timezone
-from typing import Optional
+from typing import Any
 
-import websockets
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
+from openai import AsyncOpenAI
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
-logger = logging.getLogger("ws-proxy")
+app = FastAPI(title="Realtime minimal web")
 
-APP_REVISION = os.getenv("CONTAINER_APP_REVISION", "local")
-REALTIME_SUBPROTOCOL = "oai.realtime.v1"
-DEFAULT_API_VERSION = "2024-08-06"
+INDEX_HTML = """
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Realtime demo</title>
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 2rem; }
+      form { display: flex; gap: 0.5rem; }
+      textarea, pre { width: 100%; min-height: 8rem; }
+      #status { margin-top: 1rem; color: #666; }
+      #transcript { color: #555; font-size: 0.9rem; }
+      #audio { color: #0a6; }
+    </style>
+  </head>
+  <body>
+    <h1>Azure OpenAI realtime</h1>
+    <form id="chat-form">
+      <input id="chat-input" type="text" placeholder="Type a message" required />
+      <button type="submit">Send</button>
+    </form>
+    <pre id="response"></pre>
+    <p id="transcript"></p>
+    <p id="audio">Audio bytes: 0</p>
+    <audio id="player" hidden></audio>
+    <p id="status"></p>
+    <script>
+      const SAMPLE_RATE = 24000;
+      const statusEl = document.getElementById('status');
+      const responseEl = document.getElementById('response');
+      const transcriptEl = document.getElementById('transcript');
+      const audioEl = document.getElementById('audio');
+      const form = document.getElementById('chat-form');
+      const input = document.getElementById('chat-input');
+      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+      const socket = new WebSocket(`${protocol}://${location.host}/chat`);
+      let audioBytes = 0;
+      let audioCtx;
+      let audioPlayhead = 0;
+
+      function ensureAudioContext() {
+        if (!audioCtx) {
+          audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        return audioCtx;
+      }
+
+      window.addEventListener('click', () => ensureAudioContext(), { once: true });
+
+      function playPcmChunk(base64Chunk) {
+        if (!base64Chunk) {
+          return;
+        }
+        const ctx = ensureAudioContext();
+        const binary = atob(base64Chunk);
+        const buffer = new ArrayBuffer(binary.length);
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+
+        const sampleCount = bytes.length / 2;
+        const floatSamples = new Float32Array(sampleCount);
+        const view = new DataView(buffer);
+        for (let i = 0; i < sampleCount; i += 1) {
+          const sample = view.getInt16(i * 2, true);
+          floatSamples[i] = sample / 32768;
+        }
+
+        const audioBuffer = ctx.createBuffer(1, sampleCount, ctx.sampleRate);
+        audioBuffer.getChannelData(0).set(floatSamples);
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+        const now = ctx.currentTime;
+        if (audioPlayhead < now) {
+          audioPlayhead = now;
+        }
+        source.start(audioPlayhead);
+        audioPlayhead += audioBuffer.duration;
+      }
+
+      socket.addEventListener('open', () => {
+        statusEl.textContent = 'Connected';
+      });
+
+      socket.addEventListener('close', () => {
+        statusEl.textContent = 'Disconnected';
+      });
+
+      socket.addEventListener('message', (event) => {
+        const data = JSON.parse(event.data);
+        switch (data.type) {
+          case 'text-delta':
+            responseEl.textContent += data.value ?? '';
+            break;
+          case 'text-reset':
+            responseEl.textContent = '';
+            break;
+          case 'transcript-delta':
+            transcriptEl.textContent += data.value ?? '';
+            break;
+          case 'transcript-reset':
+            transcriptEl.textContent = '';
+            break;
+          case 'audio-chunk':
+            audioBytes += (data.bytes || 0);
+            audioEl.textContent = `Audio bytes: ${audioBytes}`;
+            playPcmChunk(data.value);
+            break;
+          case 'status':
+            statusEl.textContent = data.message;
+            break;
+          case 'error':
+            statusEl.textContent = data.message;
+            break;
+          default:
+            break;
+        }
+      });
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        if (!input.value.trim()) {
+          return;
+        }
+        audioBytes = 0;
+        responseEl.textContent = '';
+        transcriptEl.textContent = '';
+        socket.send(JSON.stringify({ text: input.value.trim() }));
+        input.value = '';
+      });
+    </script>
+  </body>
+</html>
+"""
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _require_env(key: str) -> str:
-    value = os.getenv(key)
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
     if not value:
-        raise RuntimeError(f"Missing environment variable: {key}")
+        raise RuntimeError(f"Environment variable {name} is required")
     return value
 
 
-def build_realtime_url(endpoint: str, deployment: str, api_version: str) -> str:
-    base = endpoint.rstrip("/")
-    base = base.replace("https://", "wss://")
-    return f"{base}/openai/realtime?api-version={api_version}&deployment={deployment}"
+def _require_deployment() -> str:
+    value = os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME') or os.getenv('AZURE_OPENAI_DEPLOYMENT')
+    if not value:
+        raise RuntimeError("Environment variable AZURE_OPENAI_DEPLOYMENT_NAME (or legacy AZURE_OPENAI_DEPLOYMENT) is required")
+    return value
 
 
-class SignalLogger:
-    """Registers handlers that log termination signals for graceful shutdown validation."""
-
-    def __init__(self) -> None:
-        self._signals = (signal.SIGTERM, signal.SIGINT)
-
-    def register(self) -> None:
-        for sig in self._signals:
-            signal.signal(sig, self._handle)
-
-    @staticmethod
-    def _handle(signum, frame) -> None:  # type: ignore[override]
-        logger.info(
-            "signal.received",
-            extra={"signal": signum, "revision": APP_REVISION, "ts": _utc_now()},
-        )
+def _build_ws_base(endpoint: str) -> str:
+    base = endpoint.strip().rstrip('/')
+    if base.startswith('https://'):
+        base = 'wss://' + base[len('https://'):]
+    elif base.startswith('http://'):
+        base = 'wss://' + base[len('http://'):]
+    return f"{base}/openai/v1"
 
 
-def create_app() -> FastAPI:
-    signal_logger = SignalLogger()
-    signal_logger.register()
+_client: AsyncOpenAI | None = None
+_deployment_name: str | None = None
 
-    app = FastAPI(title="GPT Realtime WebSocket Proxy", version="0.1.0")
 
-    @app.get("/healthz")
-    async def health() -> JSONResponse:
-        return JSONResponse({"status": "ok", "revision": APP_REVISION})
+def _get_client() -> tuple[AsyncOpenAI, str]:
+    global _client, _deployment_name
+    if _client is None or _deployment_name is None:
+        endpoint = _require_env('AZURE_OPENAI_ENDPOINT')
+        deployment = _require_deployment()
+        api_key = _require_env('AZURE_OPENAI_API_KEY')
+        base_url = _build_ws_base(endpoint)
+        _client = AsyncOpenAI(websocket_base_url=base_url, api_key=api_key)
+        _deployment_name = deployment
+    return _client, _deployment_name
 
-    @app.get("/")
-    async def root() -> JSONResponse:
-        return JSONResponse(
-            {
-                "message": "Azure OpenAI Realtime proxy is running.",
-                "revision": APP_REVISION,
-            }
-        )
 
-    @app.websocket("/ws")
-    async def websocket_proxy(websocket: WebSocket) -> None:
-        connection_id = str(uuid.uuid4())
-        await websocket.accept(subprotocol=REALTIME_SUBPROTOCOL)
-        logger.info(
-            "client.connected",
-            extra={"connectionId": connection_id, "revision": APP_REVISION, "ts": _utc_now()},
-        )
+async def _relay_to_azure(websocket: WebSocket, user_text: str) -> None:
+    client, deployment = _get_client()
+    await websocket.send_json({'type': 'status', 'message': 'Connecting to Azure OpenAI...'})
+    try:
+        async with client.realtime.connect(model=deployment) as connection:
+            await connection.session.update(session={
+                'instructions': 'You are a helpful assistant. You respond by voice and text.',
+                'output_modalities': ['audio'],
+                'audio': {
+                    'input': {
+                        'transcription': {'model': 'whisper-1'},
+                        'format': {'type': 'audio/pcm', 'rate': 24000},
+                        'turn_detection': {
+                            'type': 'server_vad',
+                            'threshold': 0.5,
+                            'prefix_padding_ms': 300,
+                            'silence_duration_ms': 200,
+                            'create_responese': True,
+                        },
+                    },
+                    'output': {
+                        'voice': 'alloy',
+                        'format': {'type': 'audio/pcm', 'rate': 24000},
+                    },
+                },
+            })
 
-        azure_ws: Optional[websockets.WebSocketClientProtocol] = None
-        try:
-            azure_ws = await connect_to_azure()
-            await bridge_websockets(connection_id, websocket, azure_ws)
-        except WebSocketDisconnect:
-            logger.info(
-                "client.disconnected",
-                extra={"connectionId": connection_id, "reason": "client_disconnect", "ts": _utc_now()},
+            await connection.conversation.item.create(
+                item={
+                    'type': 'message',
+                    'role': 'user',
+                    'content': [{'type': 'input_text', 'text': user_text}],
+                }
             )
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.exception(
-                "proxy.error",
-                extra={"connectionId": connection_id, "error": str(exc), "ts": _utc_now()},
-            )
-            await websocket.close(code=1011)
-        finally:
-            if azure_ws:
-                await azure_ws.close()
-            logger.info(
-                "connection.closed",
-                extra={"connectionId": connection_id, "ts": _utc_now()},
-            )
+            await websocket.send_json({'type': 'text-reset'})
+            await websocket.send_json({'type': 'transcript-reset'})
+            await connection.response.create()
 
-    return app
-
-
-async def connect_to_azure() -> websockets.WebSocketClientProtocol:
-    endpoint = _require_env("AZURE_OPENAI_ENDPOINT")
-    deployment = _require_env("AZURE_OPENAI_DEPLOYMENT")
-    api_key = _require_env("AZURE_OPENAI_API_KEY")
-    api_version = os.getenv("AZURE_OPENAI_API_VERSION", DEFAULT_API_VERSION)
-
-    url = build_realtime_url(endpoint, deployment, api_version)
-    headers = {
-        "api-key": api_key,
-        "openai-beta": "realtime=v1",
-    }
-    logger.info("azure.connect", extra={"url": url, "ts": _utc_now()})
-    return await websockets.connect(url, extra_headers=headers, subprotocols=[REALTIME_SUBPROTOCOL])
+            async for event in connection:
+                if event.type == 'response.output_text.delta':
+                    await websocket.send_json({'type': 'text-delta', 'value': event.delta})
+                elif event.type == 'response.output_audio.delta':
+                  chunk = event.delta or ''
+                  if not chunk:
+                    continue
+                  raw_bytes = base64.b64decode(chunk)
+                  await websocket.send_json({'type': 'audio-chunk', 'value': chunk, 'bytes': len(raw_bytes)})
+                elif event.type == 'response.output_audio_transcript.delta':
+                    await websocket.send_json({'type': 'transcript-delta', 'value': event.delta})
+                elif event.type == 'response.output_text.done':
+                    await websocket.send_json({'type': 'status', 'message': 'Response complete'})
+                elif event.type == 'response.done':
+                    await websocket.send_json({'type': 'status', 'message': 'Model ready'})
+                    break
+    except Exception as exc:  # pragma: no cover - network failures are environment specific
+        await websocket.send_json({'type': 'error', 'message': f'Azure OpenAI error: {exc}'})
 
 
-async def bridge_websockets(
-    connection_id: str, client_ws: WebSocket, azure_ws: websockets.WebSocketClientProtocol
-) -> None:
-    async def client_to_azure() -> None:
+@app.get('/', response_class=HTMLResponse)
+async def index() -> HTMLResponse:
+    return HTMLResponse(INDEX_HTML)
+
+
+@app.get('/healthz')
+async def healthz() -> JSONResponse:
+    revision = os.getenv('CONTAINER_APP_REVISION', 'local')
+    return JSONResponse({'status': 'ok', 'revision': revision})
+
+
+@app.websocket('/chat')
+async def chat(websocket: WebSocket) -> None:
+    await websocket.accept()
+    try:
         while True:
-            message = await client_ws.receive()
-            msg_type = message.get("type")
-            if msg_type == "websocket.disconnect":
-                await azure_ws.close(code=1000)
-                break
-            data_text = message.get("text")
-            data_bytes = message.get("bytes")
-            if data_text is not None:
-                await azure_ws.send(data_text)
-            elif data_bytes is not None:
-                await azure_ws.send(data_bytes)
+            raw = await websocket.receive_text()
+            try:
+                payload: Any = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.send_json({'type': 'error', 'message': 'Messages must be JSON'})
+                continue
 
-    async def azure_to_client() -> None:
-        while True:
-            server_message = await azure_ws.recv()
-            if isinstance(server_message, str):
-                await client_ws.send_text(server_message)
-            else:
-                await client_ws.send_bytes(server_message)
+            user_text = (payload.get('text') or '').strip()
+            if not user_text:
+                await websocket.send_json({'type': 'error', 'message': 'Provide text input'})
+                continue
 
-    await asyncio.gather(client_to_azure(), azure_to_client())
-    logger.info(
-        "bridge.completed",
-        extra={"connectionId": connection_id, "ts": _utc_now()},
-    )
-
-
-app = create_app()
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "8080")),
-        reload=False,
-        log_level="info",
-    )
+            await _relay_to_azure(websocket, user_text)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            await websocket.close()
