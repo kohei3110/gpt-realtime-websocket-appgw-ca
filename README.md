@@ -24,7 +24,7 @@ Azure Container Registry stores FastAPI images used by ACA revisions.
 Key files:
 
 - `infra/main.bicep` – deploys ACR, Azure OpenAI, Container Apps, Application Gateway
-- `src/main.py` – FastAPI WebSocket proxy with detailed stdout logging
+- `src/main.py` – FastAPI WebSocket proxy (text-only) with stdout logging
 - `tests/websocket_client.py` – holds long-running WebSocket sessions (5 minutes default)
 - `scripts/test-blue-green.sh` – automates build, push, new revision rollout, and traffic shifts
 
@@ -123,6 +123,25 @@ python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
 
 Use `tests/websocket_client.py` to hold sessions locally against `ws://localhost:8080/ws`.
 
+## WebSocket Behavior
+
+The FastAPI proxy exposes `/ws` and bridges events to Azure OpenAI Realtime over
+`oai.realtime.v1`. Only the minimum client events documented in the
+[Realtime Audio reference](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/realtime-audio-reference?view=foundry-classic#client-events)
+are accepted:
+
+- `session.update`
+- `conversation.item.create` (content must be `input_text`)
+- `conversation.item.delete`
+- `conversation.item.truncate`
+- `response.create`
+- `response.cancel`
+
+Any other event types are rejected with a simple error payload. Server events
+from Azure are streamed back to the caller unchanged, so `tests/websocket_client.py`
+can be used against either `ws://localhost:8080/ws` or the Application Gateway
+endpoint to observe blue/green rollouts.
+
 ## Environment Configuration
 
 `.env.example` lists the variables the FastAPI proxy expects when running outside Container Apps:
@@ -135,6 +154,8 @@ AZURE_OPENAI_API_VERSION=2025-08-28
 PORT=8080
 CONTAINER_APP_REVISION=local
 ```
+
+With those variables defined, the proxy connects to Azure via `wss://<endpoint>/openai/v1?api-version=<version>&model=<deployment>`, which matches the latest Realtime quickstart guidance. If your resource still exposes a `*.cognitiveservices.azure.com` host, the proxy automatically falls back to the legacy `.../openai/realtime?deployment=` format so existing GlobalStandard deployments continue to work.
 
 Copy it to `.env` (git-ignored) and fill in real values for local smoke tests.
 

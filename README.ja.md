@@ -22,7 +22,7 @@ Azure Container Registry に FastAPI イメージを保存し、ACA のリビジ
 主なファイル:
 
 - `infra/main.bicep`: ACR, Azure OpenAI, Container Apps, Application Gateway を一括デプロイ
-- `src/main.py`: FastAPI ベースの WebSocket プロキシ (stdout に詳細ログを出力)
+- `src/main.py`: FastAPI ベースの WebSocket プロキシ (テキストのみ / stdout ログ)
 - `tests/websocket_client.py`: 5 分間接続を維持する WebSocket クライアント
 - `scripts/test-blue-green.sh`: 画像ビルド/プッシュ・新リビジョンデプロイ・トラフィック切替を自動化
 
@@ -121,6 +121,24 @@ python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
 
 ローカルの `ws://localhost:8080/ws` に対して `tests/websocket_client.py` を実行すれば、接続ハンドリングを確認できます。
 
+## WebSocket の挙動
+
+FastAPI プロキシは `/ws` を公開し、`oai.realtime.v1` サブプロトコルで Azure OpenAI
+Realtime にイベントを橋渡しします。ドキュメントに記載された最小限のクライアント
+イベントのみを受け入れます。
+
+- `session.update`
+- `conversation.item.create`（`input_text` コンテンツのみ）
+- `conversation.item.delete`
+- `conversation.item.truncate`
+- `response.create`
+- `response.cancel`
+
+上記以外のイベントは簡易的なエラーメッセージで拒否します。Azure 側からのサーバー
+イベントはそのままクライアントへ中継されるため、`tests/websocket_client.py` を
+`ws://localhost:8080/ws` や Application Gateway 経由のエンドポイントに向けて実行し、
+Blue/Green 切り替え時の挙動を観察できます。
+
 ## 環境変数テンプレート
 
 ローカル実行時に必要な値は `.env.example` にまとめています。以下を参考に `.env` を作成し、Git 追跡から除外されたまま利用してください。
@@ -133,6 +151,8 @@ AZURE_OPENAI_API_VERSION=2025-08-28
 PORT=8080
 CONTAINER_APP_REVISION=local
 ```
+
+これらの値をセットすると、プロキシは `wss://<endpoint>/openai/v1?api-version=<version>&model=<deployment>` という最新クイックスタート準拠の形式で Azure に接続します。エンドポイントが `*.cognitiveservices.azure.com` ドメインの場合は、従来の `.../openai/realtime?deployment=` 形式へ自動フォールバックし、GlobalStandard 時代のデプロイでもそのまま利用できます。
 
 ## ログと SIGTERM の観測
 
