@@ -189,7 +189,7 @@ def _get_client() -> tuple[AsyncOpenAI, str]:
         deployment = _require_deployment()
         api_key = _require_env('AZURE_OPENAI_API_KEY')
         base_url = _build_ws_base(endpoint)
-        _client = AsyncOpenAI(websocket_base_url=base_url, api_key=api_key)
+        _client = AsyncOpenAI(base_url=base_url, api_key=api_key)
         _deployment_name = deployment
     return _client, _deployment_name
 
