@@ -147,7 +147,7 @@ Blue/Green 切り替え時の挙動を観察できます。
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
 AZURE_OPENAI_DEPLOYMENT=gpt-realtime
 AZURE_OPENAI_API_KEY=<api-key>
-AZURE_OPENAI_API_VERSION=2025-08-28
+AZURE_OPENAI_API_VERSION=2025-04-01-preview
 PORT=8080
 CONTAINER_APP_REVISION=local
 ```

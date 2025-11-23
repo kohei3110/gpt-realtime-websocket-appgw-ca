@@ -7,9 +7,11 @@ from typing import Any
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
-from openai import AsyncOpenAI
+from openai import AsyncAzureOpenAI
 
 load_dotenv()
+
+DEFAULT_API_VERSION = "2025-04-01-preview"
 
 app = FastAPI(title="Realtime minimal web")
 
@@ -169,56 +171,52 @@ def _require_deployment() -> str:
     return value
 
 
-def _build_ws_base(endpoint: str) -> str:
-    base = endpoint.strip().rstrip('/')
-    if base.startswith('https://'):
-        base = 'wss://' + base[len('https://'):]
-    elif base.startswith('http://'):
-        base = 'wss://' + base[len('http://'):]
-    return f"{base}/openai/v1"
-
-
-_client: AsyncOpenAI | None = None
+_client: AsyncAzureOpenAI | None = None
 _deployment_name: str | None = None
 
 
-def _get_client() -> tuple[AsyncOpenAI, str]:
+def _get_client() -> tuple[AsyncAzureOpenAI, str]:
     global _client, _deployment_name
     if _client is None or _deployment_name is None:
         endpoint = _require_env('AZURE_OPENAI_ENDPOINT')
         deployment = _require_deployment()
         api_key = _require_env('AZURE_OPENAI_API_KEY')
-        base_url = _build_ws_base(endpoint)
-        _client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+        api_version = os.getenv('AZURE_OPENAI_API_VERSION', DEFAULT_API_VERSION)
+        _client = AsyncAzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=endpoint,
+            api_version=api_version,
+        )
         _deployment_name = deployment
     return _client, _deployment_name
 
 
 async def _relay_to_azure(websocket: WebSocket, user_text: str) -> None:
     client, deployment = _get_client()
+    print(f"Relaying to Azure OpenAI deployment '{deployment}': {user_text}, {client._azure_endpoint}, {client._api_version}")
     await websocket.send_json({'type': 'status', 'message': 'Connecting to Azure OpenAI...'})
     try:
         async with client.realtime.connect(model=deployment) as connection:
             await connection.session.update(session={
-                'instructions': 'You are a helpful assistant. You respond by voice and text.',
-                'output_modalities': ['audio'],
-                'audio': {
-                    'input': {
-                        'transcription': {'model': 'whisper-1'},
-                        'format': {'type': 'audio/pcm', 'rate': 24000},
-                        'turn_detection': {
-                            'type': 'server_vad',
-                            'threshold': 0.5,
-                            'prefix_padding_ms': 300,
-                            'silence_duration_ms': 200,
-                            'create_responese': True,
-                        },
-                    },
-                    'output': {
-                        'voice': 'alloy',
-                        'format': {'type': 'audio/pcm', 'rate': 24000},
-                    },
+              'instructions': 'You are a helpful assistant. You respond by voice and text.',
+              'output_modalities': ['text', 'audio'],
+              'audio': {
+                'input': {
+                  'transcription': {'model': 'whisper-1'},
+                  'format': {'type': 'audio/pcm', 'rate': 24000},
+                  'turn_detection': {
+                      'type': 'server_vad',
+                      'threshold': 0.5,
+                      'prefix_padding_ms': 300,
+                      'silence_duration_ms': 200,
+                      'create_response': True,
+                  },
                 },
+                'output': {
+                  'voice': 'alloy',
+                  'format': {'type': 'audio/pcm', 'rate': 24000},
+                },
+              },
             })
 
             await connection.conversation.item.create(
@@ -233,21 +231,22 @@ async def _relay_to_azure(websocket: WebSocket, user_text: str) -> None:
             await connection.response.create()
 
             async for event in connection:
-                if event.type == 'response.output_text.delta':
-                    await websocket.send_json({'type': 'text-delta', 'value': event.delta})
-                elif event.type == 'response.output_audio.delta':
-                  chunk = event.delta or ''
-                  if not chunk:
-                    continue
-                  raw_bytes = base64.b64decode(chunk)
-                  await websocket.send_json({'type': 'audio-chunk', 'value': chunk, 'bytes': len(raw_bytes)})
-                elif event.type == 'response.output_audio_transcript.delta':
-                    await websocket.send_json({'type': 'transcript-delta', 'value': event.delta})
-                elif event.type == 'response.output_text.done':
-                    await websocket.send_json({'type': 'status', 'message': 'Response complete'})
-                elif event.type == 'response.done':
-                    await websocket.send_json({'type': 'status', 'message': 'Model ready'})
-                    break
+              print(f"Received event: {event.type}")  # デバッグ用
+              if event.type == 'response.text.delta':
+                await websocket.send_json({'type': 'text-delta', 'value': event.delta})
+              elif event.type == 'response.audio.delta':
+                chunk = event.delta or ''
+                if not chunk:
+                  continue
+                raw_bytes = base64.b64decode(chunk)
+                await websocket.send_json({'type': 'audio-chunk', 'value': chunk, 'bytes': len(raw_bytes)})
+              elif event.type == 'response.audio_transcript.delta':
+                await websocket.send_json({'type': 'transcript-delta', 'value': event.delta})
+              elif event.type == 'response.text.done':
+                await websocket.send_json({'type': 'status', 'message': 'Response complete'})
+              elif event.type == 'response.done':
+                await websocket.send_json({'type': 'status', 'message': 'Model ready'})
+                break
     except Exception as exc:  # pragma: no cover - network failures are environment specific
         await websocket.send_json({'type': 'error', 'message': f'Azure OpenAI error: {exc}'})
 
@@ -269,6 +268,7 @@ async def chat(websocket: WebSocket) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
+            print(f"Received from client: {raw}")
             try:
                 payload: Any = json.loads(raw)
             except json.JSONDecodeError:
