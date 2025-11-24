@@ -121,26 +121,22 @@ pip install -r requirements.txt
 python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
 ```
 
-Use `tests/websocket_client.py` to hold sessions locally against `ws://localhost:8080/ws`.
+Use `tests/websocket_client.py` to hold sessions locally against `ws://localhost:8080/chat`.
 
 ## WebSocket Behavior
 
-The FastAPI proxy exposes `/ws` and bridges events to Azure OpenAI Realtime over
-`oai.realtime.v1`. Only the minimum client events documented in the
-[Realtime Audio reference](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/realtime-audio-reference?view=foundry-classic#client-events)
-are accepted:
+The FastAPI proxy exposes `/chat` and accepts simple JSON messages with a `text` field.
+It then relays the user's text to Azure OpenAI Realtime API and streams back:
 
-- `session.update`
-- `conversation.item.create` (content must be `input_text`)
-- `conversation.item.delete`
-- `conversation.item.truncate`
-- `response.create`
-- `response.cancel`
+- Text responses (`response.text.delta`)
+- Audio responses (`response.audio.delta`)
+- Audio transcripts (`response.audio_transcript.delta`)
+- Status messages
 
-Any other event types are rejected with a simple error payload. Server events
-from Azure are streamed back to the caller unchanged, so `tests/websocket_client.py`
-can be used against either `ws://localhost:8080/ws` or the Application Gateway
-endpoint to observe blue/green rollouts.
+The web interface at the root path (`/`) provides a browser-based client that
+connects to the WebSocket endpoint and displays both text and plays audio responses.
+`tests/websocket_client.py` can be used against either `ws://localhost:8080/chat`
+or the Application Gateway endpoint to observe blue/green rollouts.
 
 ## Environment Configuration
 
@@ -275,7 +271,7 @@ Keep five connections alive for five minutes to observe routing during the rollo
 
 ```bash
 python tests/websocket_client.py \
-  "ws://<application-gateway-ip>/ws" \
+  "ws://<application-gateway-ip>/chat" \
   --connections 5 \
   --duration 300 \
   --ping-interval 30

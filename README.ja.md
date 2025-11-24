@@ -119,25 +119,22 @@ pip install -r requirements.txt
 python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
 ```
 
-ローカルの `ws://localhost:8080/ws` に対して `tests/websocket_client.py` を実行すれば、接続ハンドリングを確認できます。
+ローカルの `ws://localhost:8080/chat` に対して `tests/websocket_client.py` を実行すれば、接続ハンドリングを確認できます。
 
 ## WebSocket の挙動
 
-FastAPI プロキシは `/ws` を公開し、`oai.realtime.v1` サブプロトコルで Azure OpenAI
-Realtime にイベントを橋渡しします。ドキュメントに記載された最小限のクライアント
-イベントのみを受け入れます。
+FastAPI プロキシは `/chat` を公開し、`text` フィールドを含むシンプルな JSON メッセージを受け付けます。
+ユーザーのテキストを Azure OpenAI Realtime API に中継し、以下をストリーミングで返します:
 
-- `session.update`
-- `conversation.item.create`（`input_text` コンテンツのみ）
-- `conversation.item.delete`
-- `conversation.item.truncate`
-- `response.create`
-- `response.cancel`
+- テキストレスポンス（`response.text.delta`）
+- 音声レスポンス（`response.audio.delta`）
+- 音声トランスクリプト（`response.audio_transcript.delta`）
+- ステータスメッセージ
 
-上記以外のイベントは簡易的なエラーメッセージで拒否します。Azure 側からのサーバー
-イベントはそのままクライアントへ中継されるため、`tests/websocket_client.py` を
-`ws://localhost:8080/ws` や Application Gateway 経由のエンドポイントに向けて実行し、
-Blue/Green 切り替え時の挙動を観察できます。
+ルートパス（`/`）の Web インターフェースは、ブラウザベースのクライアントを提供し、
+WebSocket エンドポイントに接続してテキストと音声レスポンスの両方を表示・再生します。
+`tests/websocket_client.py` を `ws://localhost:8080/chat` や Application Gateway
+経由のエンドポイントに向けて実行し、Blue/Green 切り替え時の挙動を観察できます。
 
 ## 環境変数テンプレート
 
@@ -251,7 +248,7 @@ export IMAGE_TAG=v0.1.1
 
 ```bash
 python tests/websocket_client.py \
-  "ws://<application-gateway-ip>/ws" \
+  "ws://<application-gateway-ip>/chat" \
   --connections 5 \
   --duration 300 \
   --ping-interval 30
