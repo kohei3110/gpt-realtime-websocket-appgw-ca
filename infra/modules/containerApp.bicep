@@ -43,6 +43,9 @@ param openAiApiKey string = ''
 @description('Set to true to create the Azure OpenAI secret and environment variable binding during deployment.')
 param includeOpenAiSecret bool = false
 
+@description('Application Gateway public IP or FQDN for WebSocket endpoint.')
+param applicationGatewayHost string = ''
+
 var secretsBase = [
   {
     name: 'acr-password'
@@ -71,6 +74,10 @@ var baseEnv = [
   {
     name: 'AZURE_OPENAI_DEPLOYMENT'
     value: openAiDeploymentName
+  }
+  {
+    name: 'APPLICATION_GATEWAY_HOST'
+    value: applicationGatewayHost
   }
 ]
 

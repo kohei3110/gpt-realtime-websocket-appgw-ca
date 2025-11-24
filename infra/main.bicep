@@ -116,6 +116,7 @@ module containerApp './modules/containerApp.bicep' = {
     openAiDeploymentName: openAiDeploymentName
     openAiApiKey: openAiApiKey
     includeOpenAiSecret: openAiSecretProvided
+    applicationGatewayHost: ''
   }
 }
 
@@ -125,7 +126,7 @@ module applicationGateway './modules/applicationGateway.bicep' = {
     prefix: prefix
     location: location
     backendFqdn: containerApp.outputs.ingressFqdn
-    backendPort: 443
+    backendPort: 80
   }
 }
 
