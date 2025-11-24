@@ -154,6 +154,67 @@ CONTAINER_APP_REVISION=local
 
 これらの値をセットすると、プロキシは `wss://<endpoint>/openai/v1?api-version=<version>&model=<deployment>` という最新クイックスタート準拠の形式で Azure に接続します。エンドポイントが `*.cognitiveservices.azure.com` ドメインの場合は、従来の `.../openai/realtime?deployment=` 形式へ自動フォールバックし、GlobalStandard 時代のデプロイでもそのまま利用できます。
 
+## Application Gateway 経由の WebSocket 接続
+
+FastAPI アプリケーションは、デフォルトで現在のホスト（ブラウザの `location.host`）に基づいて WebSocket エンドポイントを動的に解決します。つまり:
+
+- Container Apps に直接アクセスした場合: `ws://<container-app-fqdn>/chat`
+- Application Gateway 経由でアクセスした場合: `ws://<agw-public-ip>/chat`
+
+### 環境変数による明示的な設定（オプション）
+
+Application Gateway のエンドポイントを明示的に設定する必要がある場合は、`APPLICATION_GATEWAY_HOST` 環境変数を設定します:
+
+```bash
+# Application Gateway のパブリック IP を取得
+AGW_IP=$(az network public-ip show \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$PREFIX-pip" \
+  --query ipAddress -o tsv)
+
+# Container App に Application Gateway のホストを設定
+az containerapp update \
+  --name "$PREFIX-ws" \
+  --resource-group "$RESOURCE_GROUP" \
+  --set-env-vars APPLICATION_GATEWAY_HOST="$AGW_IP"
+```
+
+`APPLICATION_GATEWAY_HOST` が設定されている場合、アプリケーションは以下のエンドポイントに接続する HTML を提供します:
+- `ws://<APPLICATION_GATEWAY_HOST>/chat` (HTTP の場合)
+- `wss://<APPLICATION_GATEWAY_HOST>/chat` (HTTPS の場合)
+
+### WebSocket 接続のテスト
+
+```bash
+# Application Gateway の IP を取得
+AGW_IP=$(az deployment group show \
+  --resource-group "$RESOURCE_GROUP" \
+  --name <deployment-name> \
+  --query "properties.outputs.applicationGatewayPublicIp.value" -o tsv)
+
+# WebSocket クライアントでテスト
+python tests/websocket_client.py "ws://$AGW_IP/chat" \
+  --connections 5 \
+  --duration 300 \
+  --ping-interval 30
+```
+
+または、ブラウザで `http://$AGW_IP/` を開いて Web インターフェースをテストできます。
+
+### Application Gateway の設定について
+
+Application Gateway は WebSocket 接続をサポートするよう設定されています:
+
+- **バックエンドプロトコル**: HTTP (ポート 80) - TLS 終端は Application Gateway で実施
+- **リクエストタイムアウト**: 120 秒（より長い WebSocket セッションが必要な場合は調整可能）
+- **バックエンドプール**: Container Apps の ingress FQDN を指定
+- **ヘルスプローブ**: `/healthz` エンドポイントを 30 秒ごとに確認
+
+本番環境では以下を検討してください:
+- Application Gateway フロントエンドに TLS/SSL 証明書を追加
+- 長時間の WebSocket 接続のため `requestTimeout` を増加
+- Graceful シャットダウンのため `connectionDraining` を設定
+
 ## ログと SIGTERM の観測
 
 Container Apps の stdout/stderr は Log Analytics に送られます。リアルタイムで確認する場合:

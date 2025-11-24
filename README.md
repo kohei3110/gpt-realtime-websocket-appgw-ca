@@ -159,6 +159,67 @@ With those variables defined, the proxy connects to Azure via `wss://<endpoint>/
 
 Copy it to `.env` (git-ignored) and fill in real values for local smoke tests.
 
+## Application Gateway WebSocket Connection
+
+By default, the FastAPI application dynamically resolves the WebSocket endpoint based on the current host (browser's `location.host`). This means:
+
+- When accessed via Container Apps directly: `ws://<container-app-fqdn>/chat`
+- When accessed via Application Gateway: `ws://<agw-public-ip>/chat`
+
+### Using Environment Variable (Optional)
+
+If you need to explicitly configure the Application Gateway endpoint, set the `APPLICATION_GATEWAY_HOST` environment variable:
+
+```bash
+# Get Application Gateway Public IP
+AGW_IP=$(az network public-ip show \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$PREFIX-pip" \
+  --query ipAddress -o tsv)
+
+# Update Container App with Application Gateway host
+az containerapp update \
+  --name "$PREFIX-ws" \
+  --resource-group "$RESOURCE_GROUP" \
+  --set-env-vars APPLICATION_GATEWAY_HOST="$AGW_IP"
+```
+
+When `APPLICATION_GATEWAY_HOST` is set, the application will serve HTML that connects to:
+- `ws://<APPLICATION_GATEWAY_HOST>/chat` (for HTTP)
+- `wss://<APPLICATION_GATEWAY_HOST>/chat` (for HTTPS)
+
+### Testing WebSocket Connection
+
+```bash
+# Get Application Gateway IP
+AGW_IP=$(az deployment group show \
+  --resource-group "$RESOURCE_GROUP" \
+  --name <deployment-name> \
+  --query "properties.outputs.applicationGatewayPublicIp.value" -o tsv)
+
+# Test with the WebSocket client
+python tests/websocket_client.py "ws://$AGW_IP/chat" \
+  --connections 5 \
+  --duration 300 \
+  --ping-interval 30
+```
+
+Or open your browser to `http://$AGW_IP/` to test the web interface.
+
+### Application Gateway Configuration Notes
+
+The Application Gateway is configured to support WebSocket connections:
+
+- **Backend Protocol**: HTTP (port 80) - TLS termination happens at Application Gateway
+- **Request Timeout**: 120 seconds (adjust for longer WebSocket sessions if needed)
+- **Backend Pool**: Points to Container Apps ingress FQDN
+- **Health Probe**: Checks `/healthz` endpoint every 30 seconds
+
+For production deployments, consider:
+- Adding TLS/SSL certificate to Application Gateway frontend
+- Increasing `requestTimeout` for long-lived WebSocket connections
+- Configuring `connectionDraining` for graceful shutdown
+
 ## GitHub Actions Deployment
 
 This repo ships with `.github/workflows/deploy.yml`, which builds a container image, pushes it to Azure Container Registry, and updates your Container App. Authentication is handled by the [Configure Azure Settings](https://github.com/marketplace/configure-azure-settings) GitHub App, so no `azure/login` step is required.
