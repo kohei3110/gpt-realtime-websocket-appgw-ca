@@ -42,6 +42,70 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2022-07-01' = {
         name: subnetName
         properties: {
           addressPrefix: '10.10.0.0/24'
+          networkSecurityGroup: {
+            id: nsg.id
+          }
+        }
+      }
+    ]
+  }
+}
+
+resource nsg 'Microsoft.Network/networkSecurityGroups@2023-09-01' = {
+  name: '${prefix}-agw-nsg'
+  location: location
+  properties: {
+    securityRules: [
+      {
+        name: 'AllowGatewayManager'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          destinationPortRange: '65200-65535'
+          sourceAddressPrefix: 'GatewayManager'
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 100
+          direction: 'Inbound'
+        }
+      }
+      {
+        name: 'AllowHTTP'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          destinationPortRange: '80'
+          sourceAddressPrefix: 'Internet'
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 110
+          direction: 'Inbound'
+        }
+      }
+      {
+        name: 'AllowHTTPS'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          destinationPortRange: '443'
+          sourceAddressPrefix: 'Internet'
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 120
+          direction: 'Inbound'
+        }
+      }
+      {
+        name: 'AllowAzureLoadBalancer'
+        properties: {
+          protocol: '*'
+          sourcePortRange: '*'
+          destinationPortRange: '*'
+          sourceAddressPrefix: 'AzureLoadBalancer'
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 130
+          direction: 'Inbound'
         }
       }
     ]

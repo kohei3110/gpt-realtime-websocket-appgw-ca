@@ -50,8 +50,8 @@ INDEX_HTML = """
       const audioEl = document.getElementById('audio');
       const form = document.getElementById('chat-form');
       const input = document.getElementById('chat-input');
-      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-      const socket = new WebSocket(`${protocol}://${location.host}/chat`);
+      const wsEndpoint = '{{WS_ENDPOINT}}';
+      const socket = new WebSocket(wsEndpoint);
       let audioBytes = 0;
       let audioCtx;
       let audioPlayhead = 0;
@@ -253,7 +253,22 @@ async def _relay_to_azure(websocket: WebSocket, user_text: str) -> None:
 
 @app.get('/', response_class=HTMLResponse)
 async def index() -> HTMLResponse:
-    return HTMLResponse(INDEX_HTML)
+    agw_host = os.getenv('APPLICATION_GATEWAY_HOST', '')
+    if agw_host:
+        protocol = 'wss' if agw_host.startswith('https://') else 'ws'
+        agw_host = agw_host.replace('https://', '').replace('http://', '')
+        ws_endpoint = f'{protocol}://{agw_host}/chat'
+    else:
+        ws_endpoint = '${protocol}://${location.host}/chat'
+        html_content = INDEX_HTML.replace(
+            "const wsEndpoint = '{{WS_ENDPOINT}}';",
+            "const protocol = location.protocol === 'https:' ? 'wss' : 'ws';\n      const wsEndpoint = `${protocol}://${location.host}/chat`;"
+        )
+        return HTMLResponse(html_content)
+    
+    html_content = INDEX_HTML.replace('{{WS_ENDPOINT}}', ws_endpoint)
+    print(f"Serving index with WS endpoint: {ws_endpoint}")
+    return HTMLResponse(html_content)
 
 
 @app.get('/healthz')
