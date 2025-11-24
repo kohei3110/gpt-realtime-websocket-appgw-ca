@@ -1,0 +1,230 @@
+<mxfile host="app.diagrams.net" modified="2025-11-24T00:00:00.000Z" agent="draw.io" version="24.0.0">
+  <diagram name="Azure WebSocket Architecture" id="azure-websocket-arch">
+    <mxGraphModel dx="1434" dy="796" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        
+        <!-- Title -->
+        <mxCell id="title" value="GPT Realtime WebSocket Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="400" y="20" width="400" height="40" as="geometry" />
+        </mxCell>
+        
+        <!-- WebSocket Flow Highlight Box -->
+        <mxCell id="ws-flow-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1f5fe;strokeColor=#0277bd;strokeWidth=3;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="200" width="980" height="160" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="ws-flow-label" value="&lt;b&gt;WebSocket Connection Flow&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=13;fontStyle=1;fontColor=#0277bd;" vertex="1" parent="1">
+          <mxGeometry x="70" y="205" width="250" height="25" as="geometry" />
+        </mxCell>
+        
+        <!-- Client -->
+        <mxCell id="client" value="&lt;b&gt;Client&lt;/b&gt;&lt;br&gt;WebSocket Test&lt;br&gt;Browser / Python&lt;br&gt;&lt;br&gt;ws://&lt;ip&gt;/chat" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=0" vertex="1" parent="1">
+          <mxGeometry x="80" y="240" width="120" height="100" as="geometry" />
+        </mxCell>
+        
+        <!-- Application Gateway with WebSocket -->
+        <mxCell id="agw" value="&lt;b&gt;Application Gateway&lt;/b&gt;&lt;br&gt;Standard_v2&lt;br&gt;&lt;br&gt;HTTP Listener:80&lt;br&gt;Backend: HTTPS:443&lt;br&gt;WebSocket: Enabled&lt;br&gt;Timeout: 120s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="260" y="240" width="150" height="100" as="geometry" />
+        </mxCell>
+        
+        <!-- Virtual Network -->
+        <mxCell id="vnet" value="&lt;b&gt;Virtual Network&lt;/b&gt;&lt;br&gt;10.10.0.0/16" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;fontSize=9;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="250" y="380" width="170" height="80" as="geometry" />
+        </mxCell>
+        
+        <!-- Public IP -->
+        <mxCell id="pip" value="&lt;b&gt;Public IP&lt;/b&gt;&lt;br&gt;Static" style="ellipse;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="285" y="170" width="80" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- NSG -->
+        <mxCell id="nsg" value="&lt;b&gt;NSG&lt;/b&gt;&lt;br&gt;80,443" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=8;" vertex="1" parent="1">
+          <mxGeometry x="300" y="400" width="60" height="40" as="geometry" />
+        </mxCell>
+        
+        <!-- Container App with /chat endpoint -->
+        <mxCell id="ca" value="&lt;b&gt;Container App&lt;/b&gt;&lt;br&gt;FastAPI WebSocket Proxy&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#0277bd&quot;&gt;&lt;b&gt;Endpoint: /chat&lt;/b&gt;&lt;/font&gt;&lt;br&gt;Port: 8080&lt;br&gt;Min: 1, Max: 2&lt;br&gt;terminationGrace: 30s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=0" vertex="1" parent="1">
+          <mxGeometry x="480" y="240" width="180" height="100" as="geometry" />
+        </mxCell>
+        
+        <!-- WebSocket Proxy Detail -->
+        <mxCell id="proxy-detail" value="&lt;b&gt;WebSocket Proxy Logic&lt;/b&gt;&lt;br&gt;1. Accept client WS on /chat&lt;br&gt;2. Create WS to Azure OpenAI&lt;br&gt;3. Relay messages bidirectionally&lt;br&gt;4. Stream text/audio responses" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff9e6;strokeColor=#d79b00;fontSize=9;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="480" y="360" width="180" height="90" as="geometry" />
+        </mxCell>
+        
+        <!-- Azure OpenAI with WebSocket -->
+        <mxCell id="aoai" value="&lt;b&gt;Azure OpenAI&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#0277bd&quot;&gt;&lt;b&gt;Realtime API&lt;/b&gt;&lt;/font&gt;&lt;br&gt;gpt-realtime&lt;br&gt;GlobalStandard&lt;br&gt;&lt;br&gt;wss://&lt;endpoint&gt;/&lt;br&gt;openai/realtime" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="740" y="240" width="160" height="100" as="geometry" />
+        </mxCell>
+        
+        <!-- Container Apps Environment -->
+        <mxCell id="cae-box" value="&lt;b&gt;Container Apps Environment&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;fontSize=10;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="460" y="220" width="220" height="250" as="geometry" />
+        </mxCell>
+        
+        <!-- Revision Blue -->
+        <mxCell id="rev-blue" value="&lt;b&gt;Rev: Blue&lt;/b&gt;&lt;br&gt;50%" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#cce5ff;strokeColor=#36393d;fontSize=8;" vertex="1" parent="1">
+          <mxGeometry x="490" y="480" width="70" height="35" as="geometry" />
+        </mxCell>
+        
+        <!-- Revision Green -->
+        <mxCell id="rev-green" value="&lt;b&gt;Rev: Green&lt;/b&gt;&lt;br&gt;50%" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f4e6;strokeColor=#36393d;fontSize=8;" vertex="1" parent="1">
+          <mxGeometry x="580" y="480" width="70" height="35" as="geometry" />
+        </mxCell>
+        
+        <!-- Health Probe -->
+        <mxCell id="health" value="/healthz" style="ellipse;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=8;" vertex="1" parent="1">
+          <mxGeometry x="490" y="525" width="60" height="30" as="geometry" />
+        </mxCell>
+        
+        <!-- Log Analytics -->
+        <mxCell id="law" value="&lt;b&gt;Log Analytics&lt;/b&gt;&lt;br&gt;Workspace" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="710" y="480" width="100" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- Azure Container Registry -->
+        <mxCell id="acr" value="&lt;b&gt;ACR&lt;/b&gt;&lt;br&gt;Basic" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="830" y="480" width="80" height="50" as="geometry" />
+        </mxCell>
+        
+        <!-- Azure OpenAI Detail -->
+        <mxCell id="aoai-detail" value="&lt;b&gt;Realtime API Features&lt;/b&gt;&lt;br&gt;• Audio input/output&lt;br&gt;• Text streaming&lt;br&gt;• Function calling&lt;br&gt;• Server VAD" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#4caf50;fontSize=9;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="740" y="360" width="160" height="90" as="geometry" />
+        </mxCell>
+        
+        <!-- Arrows - WebSocket Flow (Highlighted) -->
+        <!-- Client to Public IP -->
+        <mxCell id="arrow1" value="① WebSocket&lt;br&gt;ws://&lt;ip&gt;/chat" style="endArrow=classic;html=1;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=1;entryDx=0;entryDy=0;strokeWidth=3;fontSize=10;strokeColor=#0277bd;fontColor=#0277bd;fontStyle=1" edge="1" parent="1" source="client" target="pip">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="200" y="290" as="sourcePoint" />
+            <mxPoint x="250" y="240" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Public IP to AGW -->
+        <mxCell id="arrow2" value="" style="endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeWidth=3;strokeColor=#0277bd;" edge="1" parent="1" source="pip" target="agw">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="325" y="230" as="sourcePoint" />
+            <mxPoint x="335" y="250" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- AGW to Container App -->
+        <mxCell id="arrow3" value="② Forward to&lt;br&gt;Container App&lt;br&gt;HTTPS:443" style="endArrow=classic;html=1;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=3;fontSize=10;strokeColor=#0277bd;fontColor=#0277bd;fontStyle=1" edge="1" parent="1" source="agw" target="ca">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="410" y="290" as="sourcePoint" />
+            <mxPoint x="480" y="290" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Container App to Azure OpenAI -->
+        <mxCell id="arrow4" value="③ Proxy to&lt;br&gt;Realtime API&lt;br&gt;wss://" style="endArrow=classic;html=1;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=3;fontSize=10;strokeColor=#0277bd;fontColor=#0277bd;fontStyle=1" edge="1" parent="1" source="ca" target="aoai">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="660" y="290" as="sourcePoint" />
+            <mxPoint x="740" y="290" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Response Flow -->
+        <mxCell id="arrow4-return" value="④ Stream Response&lt;br&gt;text/audio deltas" style="endArrow=classic;html=1;rounded=0;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;strokeWidth=2;fontSize=9;strokeColor=#4caf50;fontColor=#2e7d32;fontStyle=1;dashed=1;" edge="1" parent="1" source="aoai" target="ca">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="740" y="315" as="sourcePoint" />
+            <mxPoint x="660" y="315" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Container App to Proxy Detail -->
+        <mxCell id="arrow-proxy" value="" style="endArrow=none;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeWidth=1;dashed=1;strokeColor=#d79b00;" edge="1" parent="1" source="ca" target="proxy-detail">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="570" y="350" as="sourcePoint" />
+            <mxPoint x="570" y="370" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Container App to Revisions -->
+        <mxCell id="arrow5" value="" style="endArrow=classic;html=1;rounded=0;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeWidth=1;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="proxy-detail" target="rev-blue">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="525" y="460" as="sourcePoint" />
+            <mxPoint x="525" y="480" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <mxCell id="arrow6" value="" style="endArrow=classic;html=1;rounded=0;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeWidth=1;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="proxy-detail" target="rev-green">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="615" y="460" as="sourcePoint" />
+            <mxPoint x="615" y="480" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Container App to Log Analytics -->
+        <mxCell id="arrow7" value="Logs" style="endArrow=classic;html=1;rounded=0;exitX=1;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=1;dashed=1;fontSize=8;strokeColor=#b85450;" edge="1" parent="1" source="proxy-detail" target="law">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="660" y="450" as="sourcePoint" />
+            <mxPoint x="710" y="505" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- ACR to Container App -->
+        <mxCell id="arrow8" value="Image" style="endArrow=classic;html=1;rounded=0;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=1;entryDx=0;entryDy=0;strokeWidth=1;dashed=1;fontSize=8;strokeColor=#6c8ebf;" edge="1" parent="1" source="acr" target="proxy-detail">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="820" y="505" as="sourcePoint" />
+            <mxPoint x="670" y="460" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        
+        <!-- Legend -->
+        <mxCell id="legend-box" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="580" width="360" height="110" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend-title" value="&lt;b&gt;Legend&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="70" y="590" width="60" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend1" value="━━━  WebSocket Flow (Client → AGW → Container App → OpenAI)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#0277bd;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="70" y="615" width="340" height="15" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend2" value="- - -   Response Stream (text/audio deltas)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#2e7d32;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="70" y="635" width="340" height="15" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend3" value="- - -   Configuration/Management" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="70" y="655" width="340" height="15" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="legend4" value="🔵  Blue/Green: 50/50 traffic split" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="70" y="675" width="340" height="15" as="geometry" />
+        </mxCell>
+        
+        <!-- Notes -->
+        <mxCell id="notes-box" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="460" y="580" width="450" height="110" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="notes-title" value="&lt;b&gt;Key Validation Points&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="470" y="590" width="200" height="20" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="notes1" value="• WebSocket Proxy: /chat endpoint accepts client connections and relays to Azure OpenAI Realtime API" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="470" y="615" width="430" height="15" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="notes2" value="• Session Affinity: Application Gateway maintains connection to same Container App replica" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="470" y="635" width="430" height="15" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="notes3" value="• Graceful Shutdown: terminationGracePeriod=30s allows existing connections to complete" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="470" y="655" width="430" height="15" as="geometry" />
+        </mxCell>
+        
+        <mxCell id="notes4" value="• Error Code 1012 (Service Restart) indicates scale-in or revision change events" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="470" y="675" width="430" height="15" as="geometry" />
+        </mxCell>
+        
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
