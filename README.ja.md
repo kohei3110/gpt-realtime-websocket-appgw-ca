@@ -56,8 +56,8 @@ az deployment group create \
   --parameters prefix="$PREFIX" \
                openAiDeploymentName="$AZURE_OPENAI_DEPLOYMENT" \
                openAiDeploymentSku="GlobalStandard" \
-               openAiModelName="gpt-realtime-preview" \
-               openAiModelVersion="2024-08-06"
+               openAiModelName="gpt-realtime" \
+               openAiModelVersion="2025-08-28"
 ```
 
 コマンド完了後、`containerRegistryLoginServer`, `containerAppName`, `applicationGatewayPublicIp` などの出力を取得できます。

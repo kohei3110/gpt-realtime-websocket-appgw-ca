@@ -58,8 +58,8 @@ az deployment group create \
   --parameters prefix="$PREFIX" \
                openAiDeploymentName="$AZURE_OPENAI_DEPLOYMENT" \
                openAiDeploymentSku="GlobalStandard" \
-               openAiModelName="gpt-realtime-preview" \
-               openAiModelVersion="2024-08-06"
+               openAiModelName="gpt-realtime" \
+               openAiModelVersion="2025-08-28"
 ```
 
 Outputs include `containerRegistryLoginServer`, `containerAppName`, and the Application Gateway public IP.
