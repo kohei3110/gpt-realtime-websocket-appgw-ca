@@ -169,7 +169,7 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2023-09-01' =
         name: 'containerAppSetting'
         properties: {
           port: backendPort
-          protocol: 'Https'
+          protocol: 'Http'
           pickHostNameFromBackendAddress: true
           requestTimeout: 120
           probe: {
@@ -182,7 +182,7 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2023-09-01' =
       {
         name: 'containerAppProbe'
         properties: {
-          protocol: 'Https'
+          protocol: 'Http'
           path: '/healthz'
           pickHostNameFromBackendHttpSettings: true
           interval: 30
@@ -202,10 +202,18 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2023-09-01' =
         name: 'appGatewayHttpListener'
         properties: {
           frontendIPConfiguration: {
-            id: resourceId('Microsoft.Network/applicationGateways/frontendIPConfigurations', applicationGatewayName, 'appGatewayFrontendIP')
+            id: resourceId(
+              'Microsoft.Network/applicationGateways/frontendIPConfigurations',
+              applicationGatewayName,
+              'appGatewayFrontendIP'
+            )
           }
           frontendPort: {
-            id: resourceId('Microsoft.Network/applicationGateways/frontendPorts', applicationGatewayName, 'appGatewayFrontendPort')
+            id: resourceId(
+              'Microsoft.Network/applicationGateways/frontendPorts',
+              applicationGatewayName,
+              'appGatewayFrontendPort'
+            )
           }
           protocol: 'Http'
         }
@@ -218,13 +226,25 @@ resource applicationGateway 'Microsoft.Network/applicationGateways@2023-09-01' =
           ruleType: 'Basic'
           priority: 100
           httpListener: {
-            id: resourceId('Microsoft.Network/applicationGateways/httpListeners', applicationGatewayName, 'appGatewayHttpListener')
+            id: resourceId(
+              'Microsoft.Network/applicationGateways/httpListeners',
+              applicationGatewayName,
+              'appGatewayHttpListener'
+            )
           }
           backendAddressPool: {
-            id: resourceId('Microsoft.Network/applicationGateways/backendAddressPools', applicationGatewayName, 'containerAppPool')
+            id: resourceId(
+              'Microsoft.Network/applicationGateways/backendAddressPools',
+              applicationGatewayName,
+              'containerAppPool'
+            )
           }
           backendHttpSettings: {
-            id: resourceId('Microsoft.Network/applicationGateways/backendHttpSettingsCollection', applicationGatewayName, 'containerAppSetting')
+            id: resourceId(
+              'Microsoft.Network/applicationGateways/backendHttpSettingsCollection',
+              applicationGatewayName,
+              'containerAppSetting'
+            )
           }
         }
       }
