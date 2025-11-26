@@ -98,7 +98,7 @@ Set the required secrets (Azure OpenAI key) if you did not supply it via Bicep p
 az containerapp secret set \
   --name "$PREFIX-ws" \
   --resource-group "$RESOURCE_GROUP" \
-  --secrets azure-openai-api-key="$AZURE_OPENAI_KEY"
+  --secrets azure-openai-api-key="$AZURE_OPENAI_API_KEY"
 ```
 
 Bind the secret to the runtime environment variable so the proxy can read `AZURE_OPENAI_API_KEY`:
