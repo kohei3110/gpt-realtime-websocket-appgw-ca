@@ -9,11 +9,19 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from openai import AsyncAzureOpenAI
 
+# Import sideband module for WebRTC + WebSocket session separation
+from src.sideband import create_sideband_app
+
 load_dotenv()
 
 DEFAULT_API_VERSION = "2025-04-01-preview"
 
 app = FastAPI(title="Realtime minimal web")
+
+# Mount sideband app for WebRTC + WebSocket session separation demo
+sideband_app = create_sideband_app()
+for route in sideband_app.routes:
+    app.routes.append(route)
 
 INDEX_HTML = """
 <!doctype html>
