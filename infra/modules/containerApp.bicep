@@ -53,12 +53,14 @@ var secretsBase = [
   }
 ]
 
-var optionalOpenAiSecret = includeOpenAiSecret ? [
-  {
-    name: 'azure-openai-api-key'
-    value: openAiApiKey
-  }
-] : []
+var optionalOpenAiSecret = includeOpenAiSecret
+  ? [
+      {
+        name: 'azure-openai-api-key'
+        value: openAiApiKey
+      }
+    ]
+  : []
 
 var containerSecrets = concat(secretsBase, optionalOpenAiSecret)
 
@@ -81,12 +83,14 @@ var baseEnv = [
   }
 ]
 
-var optionalOpenAiEnv = includeOpenAiSecret ? [
-  {
-    name: 'AZURE_OPENAI_API_KEY'
-    secretRef: 'azure-openai-api-key'
-  }
-] : []
+var optionalOpenAiEnv = includeOpenAiSecret
+  ? [
+      {
+        name: 'AZURE_OPENAI_API_KEY'
+        secretRef: 'azure-openai-api-key'
+      }
+    ]
+  : []
 
 var containerEnv = concat(baseEnv, optionalOpenAiEnv)
 
@@ -130,7 +134,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
   properties: {
     managedEnvironmentId: managedEnvironment.id
     configuration: {
-      activeRevisionsMode: 'Multiple'
+      activeRevisionsMode: 'Single'
       ingress: {
         external: true
         targetPort: targetPort
