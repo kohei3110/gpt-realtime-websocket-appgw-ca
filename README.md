@@ -98,7 +98,7 @@ Set the required secrets (Azure OpenAI key) if you did not supply it via Bicep p
 az containerapp secret set \
   --name "$PREFIX-ws" \
   --resource-group "$RESOURCE_GROUP" \
-  --secrets azure-openai-api-key="$AZURE_OPENAI_KEY"
+  --secrets azure-openai-api-key="$AZURE_OPENAI_API_KEY"
 ```
 
 Bind the secret to the runtime environment variable so the proxy can read `AZURE_OPENAI_API_KEY`:
@@ -146,7 +146,7 @@ or the Application Gateway endpoint to observe blue/green rollouts.
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
 AZURE_OPENAI_DEPLOYMENT=gpt-realtime
 AZURE_OPENAI_API_KEY=<api-key>
-AZURE_OPENAI_API_VERSION=2025-04-01-preview
+AZURE_OPENAI_API_VERSION=2025-08-28
 PORT=8080
 CONTAINER_APP_REVISION=local
 ```
@@ -282,3 +282,132 @@ python tests/websocket_client.py \
 - Add TLS certificates to Application Gateway
 - Integrate Application Insights for deeper telemetry
 - Extend the FastAPI proxy to emit structured logs into Azure Monitor tables
+
+## Sideband Architecture Demo (WebRTC + WebSocket Session Separation)
+
+This repository includes a demonstration of OpenAI's [sideband server controls](https://platform.openai.com/docs/guides/realtime-server-controls) approach, which separates the user-OpenAI connection from the server-OpenAI control channel.
+
+**Now supports both Azure OpenAI and OpenAI Direct API!**
+
+### Architecture
+
+```
+┌─────────────┐                      ┌─────────────────────┐
+│    User     │◄─────WebRTC─────────►│  Azure OpenAI /     │
+│  (Browser)  │   (audio/video)      │  OpenAI Realtime    │
+└─────────────┘                      └─────────────────────┘
+                                              ▲
+                                              │
+                                         WebSocket
+                                        (call_id)
+                                              │
+                                        ┌─────┴─────┐
+                                        │   Server  │
+                                        │ (Control) │
+                                        └───────────┘
+```
+
+### Benefits
+
+- **Low Latency**: Audio streams directly between user and OpenAI via WebRTC, bypassing the server
+- **Scalability**: Server does not need to handle audio data, reducing bandwidth and CPU requirements
+- **Separation of Concerns**: Server handles business logic, tools, and session management while media flows independently
+- **Cost Efficiency**: Less server resources needed for audio processing
+
+### How It Works
+
+1. **Session Creation**: Server creates a session ID for tracking
+2. **WebRTC Connection**: User establishes direct WebRTC connection to OpenAI, receiving a `call_id`
+3. **Sideband Connection**: Server connects to the SAME OpenAI session using the `call_id` via WebSocket
+4. **Parallel Operation**: Both connections share the session - user sends audio, server monitors and controls
+
+### Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/sideband` | GET | Web UI for sideband demo |
+| `/sideband/config` | GET | Get current provider configuration |
+| `/sideband/session` | POST | Create a new sideband session |
+| `/sideband/ephemeral-key` | POST | Get ephemeral key for WebRTC |
+| `/sideband/offer` | POST | Exchange WebRTC SDP offer |
+| `/sideband/control/{session_id}` | WS | Server sideband control WebSocket |
+| `/sideband/sessions` | GET | List all active sessions |
+| `/sideband/session/{session_id}` | GET | Get session details |
+
+### Testing with Azure OpenAI
+
+1. **Environment Setup**: Set Azure OpenAI environment variables
+
+```bash
+# Required for Azure OpenAI
+export AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+export AZURE_OPENAI_API_KEY=your-api-key
+export AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o-realtime-preview
+
+# Supported models: gpt-4o-realtime-preview, gpt-4o-mini-realtime-preview, gpt-realtime, gpt-realtime-mini
+# Supported regions: East US 2, Sweden Central
+```
+
+2. **Start the Server**:
+
+```bash
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
+```
+
+3. **Access the Demo**: Open `http://localhost:8080/sideband` in your browser
+
+4. **Follow the Steps**:
+   - Click "1. Create Session" to initialize a sideband session
+   - Click "2. Connect WebRTC" to establish direct audio connection to Azure OpenAI
+   - Click "3. Connect Server Sideband" to connect the server control channel
+   - Use "Start Microphone" to begin audio streaming
+   - Use "Update Instructions" or "Send Server Message" to demonstrate server-side control
+
+### Testing with OpenAI Direct API
+
+If you don't have Azure OpenAI, you can use OpenAI's direct API:
+
+```bash
+# For OpenAI direct API (without AZURE_OPENAI_ENDPOINT set)
+export OPENAI_API_KEY=sk-your-api-key
+export OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview-2024-12-17
+```
+
+### Understanding the Logs
+
+When running the demo, observe the server logs for session separation confirmation:
+
+```
+============================================================
+[SIDEBAND SESSION LOG] 2025-11-30T10:30:15.123456
+  Provider: AZURE
+  Session ID: sideband_abc123def456
+  Call ID: rtc_u1_9c6574da8b8a41a18da9308f4ad974ce
+  Event: Server WebSocket Connected
+  Details: Now BOTH user (WebRTC) and server (WebSocket) are connected to the SAME Azure OpenAI session!
+  WebRTC Connected: True
+  WebSocket (Server) Connected: True
+  Events from OpenAI: 5
+  Events to OpenAI: 2
+============================================================
+```
+
+Key log messages to look for:
+- `[NEW SIDEBAND SESSION CREATED]` - Session initialized
+- `[WEBRTC CONNECTION ESTABLISHED]` - User connected via WebRTC, `call_id` obtained
+- `[SERVER SIDEBAND CONNECTION STARTING]` - Server connecting to same session
+- `[SIDEBAND SESSION LOG]` - Ongoing session status with both connections active
+
+### Key Implementation Files
+
+- [src/sideband.py](src/sideband.py) - Sideband module with Azure OpenAI and OpenAI support
+- [src/main.py](src/main.py) - Main FastAPI app integrating sideband endpoints
+
+### Azure OpenAI Specific Notes
+
+- **API Endpoints**:
+  - Ephemeral key: `https://{resource}.openai.azure.com/openai/v1/realtime/client_secrets`
+  - WebRTC calls: `https://{resource}.openai.azure.com/openai/v1/realtime/calls`
+  - WebSocket sideband: `wss://{resource}.openai.azure.com/openai/v1/realtime?call_id={call_id}`
+- **Authentication**: Uses API key (`api-key` header) or Azure AD Bearer token
+- **Supported Regions**: East US 2, Sweden Central (GlobalStandard deployments)
