@@ -96,7 +96,7 @@ Azure OpenAI の API キーを後から登録する場合:
 az containerapp secret set \
   --name "$PREFIX-ws" \
   --resource-group "$RESOURCE_GROUP" \
-  --secrets azure-openai-api-key="$AZURE_OPENAI_KEY"
+  --secrets azure-openai-api-key="$AZURE_OPENAI_API_KEY"
 ```
 
 続いて、同じシークレットを `AZURE_OPENAI_API_KEY` 環境変数に紐づけます。
@@ -212,7 +212,22 @@ Application Gateway は WebSocket 接続をサポートするよう設定され�
 - 長時間の WebSocket 接続のため `requestTimeout` を増加
 - Graceful シャットダウンのため `connectionDraining` を設定
 
-## ログと SIGTERM の観測
+## GitHub Actions でのデプロイ
+
+このリポジトリには `.github/workflows/deploy.yml` が含まれており、コンテナイメージのビルド → ACR へのプッシュ → Container Apps の更新を自動化できます。認証は [Configure Azure Settings](https://github.com/marketplace/configure-azure-settings) GitHub App が担うため、`azure/login` ステップは不要です。
+
+1. Configure Azure Settings アプリをこのリポジトリにインストールし、サブスクリプション/リソースグループに紐付けます。
+2. リポジトリの **Variables** (Settings → Secrets and Variables → Actions → Variables) に以下を登録します:
+  - `AZURE_CONTAINER_REGISTRY` (例: `gptrtacr`)
+  - `RESOURCE_GROUP` (例: `rg-gptrealtimewebsocket-demo-swedencentral-001`)
+  - `CONTAINER_APP_NAME` (例: `gptrt-ws`)
+3. `main` に push（または Actions から *Run workflow* で手動実行）すると、パイプラインが以下を実行します:
+  - `az acr login`
+  - `docker build` と `docker push`
+  - 新しい revision suffix を付けた `az containerapp update`
+  - 検証用に Container App の ingress FQDN を出力
+
+## ログの観測（SIGTERM / SIGKILL）
 
 Container Apps の stdout/stderr は Log Analytics に送られます。リアルタイムで確認する場合:
 
@@ -223,9 +238,11 @@ az containerapp logs show \
   --follow
 ```
 
-`signal.received`, `client.connected`, `bridge.completed` などのログを追跡すると、Graceful termination の挙動を把握できます。
+`signal.received`, `client.connected`, `bridge.completed`, `connection.closed` などのログを追跡すると、Graceful termination の挙動（SIGTERM→SIGKILL のタイミング等）を把握できます。
 
 ## Blue/Green ロールアウト支援スクリプト
+
+`scripts/test-blue-green.sh` はシンプルなロールアウトを自動化します:
 
 ```bash
 export RESOURCE_GROUP=<rg>
@@ -239,12 +256,14 @@ export IMAGE_TAG=v0.1.1
 スクリプトの処理内容:
 
 1. `docker build` + `docker push`
-2. 新リビジョンの `az containerapp update`
-3. 50/50 → 100% の重み付けトラフィック変更
-4. 旧リビジョンの `az containerapp revision deactivate`
-5. `az containerapp logs show --follow` コマンドを表示 (ログストリーム追跡用)
+2. `az containerapp update`（新しい revision suffix）
+3. 重み付けトラフィック分割（50/50 → 新リビジョンへ 100%）
+4. 旧リビジョンの無効化（deactivate）
+5. SIGTERM のタイミング観測用に `az containerapp logs show --follow` コマンドを出力
 
 ## 長時間接続テスト
+
+5 接続を 5 分維持し、ロールアウト中のルーティング挙動を観察します:
 
 ```bash
 python tests/websocket_client.py \
@@ -254,21 +273,137 @@ python tests/websocket_client.py \
   --ping-interval 30
 ```
 
-5 分間接続を維持しながらトラフィック分割を切り替えることで、WebSocket が切断されないかを確認できます。
-
-## GitHub Actions でのデプロイ
-
-`.github/workflows/deploy.yml` を使うと、Docker イメージのビルド/プッシュと Container Apps 更新を自動化できます。すでに [Configure Azure Settings](https://github.com/marketplace/configure-azure-settings) アプリをこのリポジトリにインストールしている前提なので、`azure/login` アクションは不要です。
-
-1. Configure Azure Settings アプリで対象サブスクリプション/リソースグループへのアクセスを許可。
-2. リポジトリの **Variables** (Settings → Secrets and Variables → Actions → Variables) に以下を登録:
-  - `AZURE_CONTAINER_REGISTRY` (例: `gptrtacr`)
-  - `RESOURCE_GROUP` (例: `rg-gptrealtimewebsocket-demo-swedencentral-001`)
-  - `CONTAINER_APP_NAME` (例: `gptrt-ws`)
-3. `main` ブランチへ push すると、ワークフローが自動で ACR へのログイン / `docker build` / `docker push` / `az containerapp update` を実行し、最後に公開 FQDN を表示します。手動実行したい場合は Actions 画面で `Run workflow` を押してください。
-
 ## 次のステップ
 
-- Application Gateway に TLS 証明書を適用し HTTPS 化
-- Application Insights にメトリクスを送信
-- FastAPI 側ログを JSON 形式にし Azure Monitor KQL で分析
+- Application Gateway に TLS 証明書を追加
+- Application Insights を統合してより深いテレメトリを取得
+- FastAPI プロキシを拡張し、構造化ログを Azure Monitor テーブルへ送信
+
+## Sideband アーキテクチャ デモ（WebRTC + WebSocket のセッション分離）
+
+このリポジトリには、OpenAI の [sideband server controls](https://platform.openai.com/docs/guides/realtime-server-controls) の考え方（ユーザー↔OpenAI の接続と、サーバー↔OpenAI の制御チャネルを分離する）をデモする実装が含まれています。
+
+**Azure OpenAI と OpenAI 直 API の両方に対応しています。**
+
+### アーキテクチャ
+
+```
+┌─────────────┐                      ┌─────────────────────┐
+│    User     │◄─────WebRTC─────────►│  Azure OpenAI /     │
+│  (Browser)  │   (audio/video)      │  OpenAI Realtime    │
+└─────────────┘                      └─────────────────────┘
+                                              ▲
+                                              │
+                                         WebSocket
+                                        (call_id)
+                                              │
+                                        ┌─────┴─────┐
+                                        │   Server  │
+                                        │ (Control) │
+                                        └───────────┘
+```
+
+### メリット
+
+- **低遅延**: 音声は WebRTC でユーザーと OpenAI 間を直接流れ、サーバーをバイパス
+- **スケーラビリティ**: サーバーが音声データを扱わないため帯域/CPU を節約
+- **責務分離**: サーバーは業務ロジック・ツール・セッション管理に集中し、メディアは独立
+- **コスト効率**: 音声処理のためのサーバーリソースを削減
+
+### 仕組み
+
+1. **セッション作成**: サーバーが追跡用のセッション ID を発行
+2. **WebRTC 接続**: ユーザーが OpenAI へ WebRTC 接続し、`call_id` を取得
+3. **Sideband 接続**: サーバーが `call_id` を使って同一セッションへ WebSocket 接続
+4. **並行動作**: 音声はユーザー↔OpenAI、制御/監視はサーバー↔OpenAI で同時に動作
+
+### エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|----------|--------|-------------|
+| `/sideband` | GET | Sideband デモ用 Web UI |
+| `/sideband/config` | GET | 現在のプロバイダー設定を取得 |
+| `/sideband/session` | POST | Sideband セッションを作成 |
+| `/sideband/ephemeral-key` | POST | WebRTC 用の ephemeral key を取得 |
+| `/sideband/offer` | POST | WebRTC SDP offer を交換 |
+| `/sideband/control/{session_id}` | WS | サーバー側 Sideband 制御 WebSocket |
+| `/sideband/sessions` | GET | アクティブなセッション一覧 |
+| `/sideband/session/{session_id}` | GET | セッション詳細 |
+
+### Azure OpenAI でのテスト
+
+1. **環境変数の設定**:
+
+```bash
+# Azure OpenAI 用（必須）
+export AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+export AZURE_OPENAI_API_KEY=your-api-key
+export AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o-realtime-preview
+
+# 対応モデル: gpt-4o-realtime-preview, gpt-4o-mini-realtime-preview, gpt-realtime, gpt-realtime-mini
+# 対応リージョン: East US 2, Sweden Central
+```
+
+2. **サーバー起動**:
+
+```bash
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
+```
+
+3. **デモへアクセス**: ブラウザで `http://localhost:8080/sideband`
+
+4. **画面の手順に従う**:
+   - "1. Create Session" でセッション初期化
+   - "2. Connect WebRTC" で Azure OpenAI へ直接音声接続（`call_id` 取得）
+   - "3. Connect Server Sideband" でサーバー制御チャネルを接続
+   - "Start Microphone" で音声ストリーミング開始
+   - "Update Instructions" / "Send Server Message" でサーバー側制御をデモ
+
+### OpenAI 直 API でのテスト
+
+Azure OpenAI がない場合は、OpenAI 直 API を利用できます:
+
+```bash
+# OpenAI 直 API 用（AZURE_OPENAI_ENDPOINT を設定しない）
+export OPENAI_API_KEY=sk-your-api-key
+export OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview-2024-12-17
+```
+
+### ログの見どころ
+
+デモ実行中は、サーバーログで「セッション分離」が確認できます:
+
+```
+============================================================
+[SIDEBAND SESSION LOG] 2025-11-30T10:30:15.123456
+  Provider: AZURE
+  Session ID: sideband_abc123def456
+  Call ID: rtc_u1_9c6574da8b8a41a18da9308f4ad974ce
+  Event: Server WebSocket Connected
+  Details: Now BOTH user (WebRTC) and server (WebSocket) are connected to the SAME Azure OpenAI session!
+  WebRTC Connected: True
+  WebSocket (Server) Connected: True
+  Events from OpenAI: 5
+  Events to OpenAI: 2
+============================================================
+```
+
+主に以下のログが重要です:
+- `[NEW SIDEBAND SESSION CREATED]` - セッション初期化
+- `[WEBRTC CONNECTION ESTABLISHED]` - WebRTC 接続確立（`call_id` 取得）
+- `[SERVER SIDEBAND CONNECTION STARTING]` - サーバーが同一セッションへ接続開始
+- `[SIDEBAND SESSION LOG]` - WebRTC と WebSocket の両方が接続されている状態のスナップショット
+
+### 実装の要点ファイル
+
+- [src/sideband.py](src/sideband.py) - Sideband モジュール（Azure OpenAI / OpenAI 直 API 対応）
+- [src/main.py](src/main.py) - Sideband エンドポイントを統合した FastAPI アプリ
+
+### Azure OpenAI 固有のメモ
+
+- **API エンドポイント**:
+  - Ephemeral key: `https://{resource}.openai.azure.com/openai/v1/realtime/client_secrets`
+  - WebRTC 呼び出し: `https://{resource}.openai.azure.com/openai/v1/realtime/calls`
+  - WebSocket sideband: `wss://{resource}.openai.azure.com/openai/v1/realtime?call_id={call_id}`
+- **認証**: API key（`api-key` ヘッダー）または Azure AD Bearer token
+- **対応リージョン**: East US 2, Sweden Central（GlobalStandard デプロイ）
