@@ -327,7 +327,6 @@ def create_sideband_app() -> FastAPI:
                     "session": {
                         "type": "realtime",
                         "model": model,
-                        # "model": "gpt-realtime-shkinosh",
                         "instructions": "You are a helpful assistant.",
                         "audio": {"output": {"voice": "alloy"}},
                     },
@@ -517,20 +516,90 @@ def create_sideband_app() -> FastAPI:
                             session.last_event_type = event_type
                             session.last_activity = datetime.now()
 
-                            # Log interesting events
+                            # ========================================
+                            # TRANSCRIPTION OUTPUT (User & AI)
+                            # ========================================
+                            
+                            # User speech transcription (input)
+                            if event_type == "conversation.item.input_audio_transcription.completed":
+                                transcript = data.get("transcript", "")
+                                item_id = data.get("item_id", "unknown")
+                                print(f"\n{'=' * 60}")
+                                print(f"[TRANSCRIPTION] USER SPEECH - completed")
+                                print(f"  Session: {session.session_id}")
+                                print(f"  Item ID: {item_id}")
+                                print(f"  Text: {transcript}")
+                                print(f"{'=' * 60}\n")
+
+                            # User speech transcription (input - segment)
+                            elif event_type == "conversation.item.input_audio_transcription.segment":
+                                transcript = data.get("transcript", "")
+                                item_id = data.get("item_id", "unknown")
+                                print(f"\n{'=' * 60}")
+                                print(f"[TRANSCRIPTION] USER SPEECH - segment")
+                                print(f"  Session: {session.session_id}")
+                                print(f"  Item ID: {item_id}")
+                                print(f"  Text: {transcript}")
+                                print(f"{'=' * 60}\n")
+
+                            # User speech transcription (input - delta)
+                            elif event_type == "conversation.item.input_audio_transcription.delta":
+                                transcript = data.get("transcript", "")
+                                item_id = data.get("item_id", "unknown")
+                                print(f"\n{'=' * 60}")
+                                print(f"[TRANSCRIPTION] USER SPEECH - delta")
+                                print(f"  Session: {session.session_id}")
+                                print(f"  Item ID: {item_id}")
+                                print(f"  Text: {transcript}")
+                                print(f"{'=' * 60}\n")
+
+                            # AI response transcription (output) - streaming delta
+                            elif event_type == "response.audio_transcript.delta":
+                                delta = data.get("delta", "")
+                                # Print delta without newline for streaming effect
+                                print(delta, end="", flush=True)
+                            
+                            # AI response transcription (output) - completed
+                            elif event_type == "response.audio_transcript.done":
+                                transcript = data.get("transcript", "")
+                                print(f"\n{'=' * 60}")
+                                print(f"[TRANSCRIPTION] AI RESPONSE COMPLETE")
+                                print(f"  Session: {session.session_id}")
+                                print(f"  Full Text: {transcript}")
+                                print(f"{'=' * 60}\n")
+                            
+                            # Alternative: output_audio_transcript events
+                            elif event_type == "response.output_audio_transcript.delta":
+                                delta = data.get("delta", "")
+                                print(delta, end="", flush=True)
+                            
+                            elif event_type == "response.output_audio_transcript.done":
+                                transcript = data.get("transcript", "")
+                                print(f"\n{'=' * 60}")
+                                print(f"[TRANSCRIPTION] AI RESPONSE COMPLETE")
+                                print(f"  Session: {session.session_id}")
+                                print(f"  Full Text: {transcript}")
+                                print(f"{'=' * 60}\n")
+                            
+                            # Speech started/stopped indicators
+                            elif event_type == "input_audio_buffer.speech_started":
+                                print(f"\n[SPEECH] User started speaking... (Session: {session.session_id})")
+                            
+                            elif event_type == "input_audio_buffer.speech_stopped":
+                                print(f"[SPEECH] User stopped speaking. (Session: {session.session_id})")
+
+                            # Log other interesting events
                             if event_type in [
                                 "session.created",
                                 "session.updated",
                                 "conversation.item.created",
                                 "response.created",
                                 "response.done",
-                                "input_audio_buffer.speech_started",
-                                "input_audio_buffer.speech_stopped",
                             ]:
                                 _log_session_info(
                                     session,
                                     f"Event from OpenAI: {event_type}",
-                                    f"Server sees this via sideband, user's audio flows via WebRTC",
+                                    f"Server sees this via sideband, user's audio flows via WebRTC \n Show received data for debugging purposes {json.dumps(data, indent=2)}"
                                 )
 
                             # Forward to client websocket
@@ -986,11 +1055,60 @@ SIDEBAND_HTML = """
                 dataChannel = peerConnection.createDataChannel('oai-events');
                 dataChannel.onopen = () => {
                     logWebRTC('Data channel opened', 'success');
+                    
+                    // *** IMPORTANT: Send session.update to enable transcription ***
+                    // API schema updated: use audio.input.transcription instead of input_audio_transcription
+                    // See: https://platform.openai.com/docs/api-reference/realtime-sessions/create
+                    const sessionUpdate = {
+                        type: 'session.update',
+                        session: {
+                            type: 'realtime',
+                            audio: {
+                                input: {
+                                    transcription: {
+                                        model: 'whisper-1'
+                                    },
+                                    turn_detection: {
+                                        type: 'server_vad',
+                                        threshold: 0.5,
+                                        prefix_padding_ms: 300,
+                                        silence_duration_ms: 500,
+                                        create_response: true
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    dataChannel.send(JSON.stringify(sessionUpdate));
+                    logWebRTC('Sent session.update to enable transcription via data channel', 'success');
+                    logSeparation('Enabled audio.input.transcription with whisper-1 model', 'info');
                 };
                 dataChannel.onmessage = (event) => {
                     try {
                         const data = JSON.parse(event.data);
-                        logWebRTC(`Event via WebRTC data channel: ${data.type}`, 'event');
+                        const eventType = data.type || 'unknown';
+                        
+                        // Log transcription events prominently
+                        if (eventType === 'conversation.item.input_audio_transcription.completed') {
+                            const transcript = data.transcript || '';
+                            logWebRTC(`[USER TRANSCRIPTION] ${transcript}`, 'success');
+                            logSeparation(`User said: "${transcript}"`, 'success');
+                        } else if (eventType === 'response.audio_transcript.done') {
+                            const transcript = data.transcript || '';
+                            logWebRTC(`[AI TRANSCRIPTION] ${transcript}`, 'success');
+                            logSeparation(`AI said: "${transcript}"`, 'success');
+                        } else if (eventType === 'session.updated') {
+                            logWebRTC('Session updated successfully', 'success');
+                            // Check if transcription was enabled
+                            if (data.session?.input_audio_transcription) {
+                                logWebRTC('Transcription enabled: ' + JSON.stringify(data.session.input_audio_transcription), 'info');
+                            }
+                        } else if (eventType === 'error') {
+                            const errorMsg = data.error?.message || JSON.stringify(data);
+                            logWebRTC(`Error: ${errorMsg}`, 'error');
+                        } else {
+                            logWebRTC(`Event via data channel: ${eventType}`, 'event');
+                        }
                     } catch (e) {
                         logWebRTC(`Data channel message: ${event.data}`, 'event');
                     }
@@ -1105,13 +1223,19 @@ SIDEBAND_HTML = """
         }
         
         async function startAudio() {
-            // Microphone is now started during connectWebRTC
-            // This function is kept for manual restart if needed
+            // If we already have a stream, just enable the tracks (unmute)
             if (localStream) {
-                logWebRTC('Microphone already active', 'info');
+                localStream.getTracks().forEach(track => {
+                    track.enabled = true;
+                });
+                logWebRTC('Microphone started - audio going directly to OpenAI via WebRTC', 'success');
+                logSeparation('User microphone active - audio bypasses server completely', 'success');
+                document.getElementById('btn-start-audio').disabled = true;
+                document.getElementById('btn-stop-audio').disabled = false;
                 return;
             }
             
+            // First time: get microphone access
             try {
                 logWebRTC('Requesting microphone access...', 'info');
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1133,8 +1257,11 @@ SIDEBAND_HTML = """
         
         function stopAudio() {
             if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-                localStream = null;
+                // Use track.enabled to mute instead of track.stop()
+                // This preserves the WebRTC connection and allows resuming
+                localStream.getTracks().forEach(track => {
+                    track.enabled = false;
+                });
                 logWebRTC('Microphone stopped', 'info');
                 document.getElementById('btn-start-audio').disabled = false;
                 document.getElementById('btn-stop-audio').disabled = true;
