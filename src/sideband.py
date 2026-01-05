@@ -1223,13 +1223,19 @@ SIDEBAND_HTML = """
         }
         
         async function startAudio() {
-            // Microphone is now started during connectWebRTC
-            // This function is kept for manual restart if needed
+            // If we already have a stream, just enable the tracks (unmute)
             if (localStream) {
-                logWebRTC('Microphone already active', 'info');
+                localStream.getTracks().forEach(track => {
+                    track.enabled = true;
+                });
+                logWebRTC('Microphone started - audio going directly to OpenAI via WebRTC', 'success');
+                logSeparation('User microphone active - audio bypasses server completely', 'success');
+                document.getElementById('btn-start-audio').disabled = true;
+                document.getElementById('btn-stop-audio').disabled = false;
                 return;
             }
             
+            // First time: get microphone access
             try {
                 logWebRTC('Requesting microphone access...', 'info');
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1251,8 +1257,11 @@ SIDEBAND_HTML = """
         
         function stopAudio() {
             if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-                localStream = null;
+                // Use track.enabled to mute instead of track.stop()
+                // This preserves the WebRTC connection and allows resuming
+                localStream.getTracks().forEach(track => {
+                    track.enabled = false;
+                });
                 logWebRTC('Microphone stopped', 'info');
                 document.getElementById('btn-start-audio').disabled = false;
                 document.getElementById('btn-stop-audio').disabled = true;
