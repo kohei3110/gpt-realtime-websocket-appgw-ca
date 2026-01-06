@@ -296,6 +296,16 @@ This repository includes a demonstration of OpenAI's [sideband server controls](
 │    User     │◄─────WebRTC─────────►│  Azure OpenAI /     │
 │  (Browser)  │   (audio/video)      │  OpenAI Realtime    │
 └─────────────┘                      └─────────────────────┘
+  ▲
+  │ Server → Browser events
+  │ (Azure SignalR Service: serverless / LISTEN)
+  │
+┌──────┴────────┐
+│ Azure SignalR  │
+│   Service      │
+└──────┬────────┘
+  │ REST API (server → service)
+  ▼
                                               ▲
                                               │
                                          WebSocket
@@ -306,6 +316,13 @@ This repository includes a demonstration of OpenAI's [sideband server controls](
                                         │ (Control) │
                                         └───────────┘
 ```
+
+Notes:
+
+- This demo uses **Azure SignalR Service (serverless)** to deliver **Server → Browser** events.
+- In serverless, the browser connects in **LISTEN** mode. To keep things reliable, **Browser → Server** commands are sent via HTTP (`POST /sideband/command`), not via SignalR.
+- The browser connects to SignalR from the `/sideband` page (negotiate at `POST /sideband/negotiate`).
+- The server pushes events to the browser via SignalR REST API (for example: `/api/v1/hubs/{hub}/users/{session_id}`).
 
 ### Benefits
 
@@ -326,11 +343,13 @@ This repository includes a demonstration of OpenAI's [sideband server controls](
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/sideband` | GET | Web UI for sideband demo |
+| `/sideband/negotiate` | POST | SignalR serverless negotiate (browser LISTEN connection) |
+| `/sideband/command` | POST | Browser → server commands via HTTP (LISTEN mode friendly) |
 | `/sideband/config` | GET | Get current provider configuration |
 | `/sideband/session` | POST | Create a new sideband session |
 | `/sideband/ephemeral-key` | POST | Get ephemeral key for WebRTC |
 | `/sideband/offer` | POST | Exchange WebRTC SDP offer |
-| `/sideband/control/{session_id}` | WS | Server sideband control WebSocket |
+| `/sideband/control/{session_id}` | WS | (Legacy/optional) Browser WebSocket control path |
 | `/sideband/sessions` | GET | List all active sessions |
 | `/sideband/session/{session_id}` | GET | Get session details |
 
@@ -359,9 +378,16 @@ python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
 4. **Follow the Steps**:
    - Click "1. Create Session" to initialize a sideband session
    - Click "2. Connect WebRTC" to establish direct audio connection to Azure OpenAI
-   - Click "3. Connect Server Sideband" to connect the server control channel
+  - Click "3. Connect SignalR (LISTEN)" to connect the browser listen channel (via Azure SignalR Service)
    - Use "Start Microphone" to begin audio streaming
    - Use "Update Instructions" or "Send Server Message" to demonstrate server-side control
+
+> For the SignalR listen channel, set the following environment variables (local `.env` is git-ignored):
+>
+> - `AZURE_SIGNALR_CONNECTION_STRING` (e.g. `Endpoint=https://<name>.service.signalr.net;AccessKey=...;Version=1.0;`)
+> - `AZURE_SIGNALR_HUB_NAME` (e.g. `sideband`)
+>
+> `AZURE_SIGNALR_HUB_NAME` is not a value you “fetch” from Azure Portal. It is a **logical hub name defined by your app**, and it is used directly in URLs like `.../client/?hub=<hub>` and REST paths like `/api/v1/hubs/<hub>/...`.
 
 ### Testing with OpenAI Direct API
 

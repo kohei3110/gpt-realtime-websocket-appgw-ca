@@ -23,12 +23,15 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from datetime import timedelta
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+
+from src.signalr import SignalRService, parse_signalr_connection_string
 
 
 # Session tracking for demonstrating session separation
@@ -37,8 +40,10 @@ class SidebandSession:
     """Tracks a sideband session with both WebRTC and WebSocket connections."""
 
     session_id: str
+    session_token: str
     call_id: str  # OpenAI call_id from WebRTC SDP response
     created_at: datetime
+    expires_at: datetime
     webrtc_connected: bool = False
     websocket_connected: bool = False
     user_agent: str = ""
@@ -66,6 +71,242 @@ class WebRTCOfferRequest(BaseModel):
 # In-memory session store (for demonstration)
 _sessions: dict[str, SidebandSession] = {}
 _websocket_connections: dict[str, WebSocket] = {}
+
+
+@dataclass
+class _OpenAIControlChannel:
+    """Background OpenAI WS control channel per session.
+
+    This is used for the SignalR PoC path where browser commands arrive via HTTP,
+    and server->browser events are delivered via Azure SignalR REST API.
+    """
+
+    queue: asyncio.Queue[str] = field(default_factory=lambda: asyncio.Queue(maxsize=100))
+    task: asyncio.Task[None] | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+_control_channels: dict[str, _OpenAIControlChannel] = {}
+_signalr_service: SignalRService | None = None
+_cleanup_task: asyncio.Task[None] | None = None
+
+
+def _is_truthy_env(name: str) -> bool:
+    value = (os.getenv(name, "") or "").strip().lower()
+    return value in {"1", "true", "yes", "y", "on"}
+
+
+def _require_session_auth(session: SidebandSession, token: str) -> None:
+    token = (token or "").strip()
+    if not token or not secrets.compare_digest(token, session.session_token):
+        raise HTTPException(status_code=401, detail="Invalid session token")
+    if datetime.now() >= session.expires_at:
+        raise HTTPException(status_code=410, detail="Session expired")
+
+
+def _get_signalr_service() -> SignalRService:
+    """Get cached SignalRService configured from environment."""
+
+    global _signalr_service
+    if _signalr_service is not None:
+        return _signalr_service
+
+    cs = os.getenv("AZURE_SIGNALR_CONNECTION_STRING", "").strip()
+    hub = os.getenv("AZURE_SIGNALR_HUB_NAME", "").strip()
+    if not cs:
+        raise RuntimeError("AZURE_SIGNALR_CONNECTION_STRING is required for SignalR sideband")
+    if not hub:
+        raise RuntimeError("AZURE_SIGNALR_HUB_NAME is required for SignalR sideband")
+
+    info = parse_signalr_connection_string(cs)
+    _signalr_service = SignalRService(connection_info=info, hub_name=hub)
+    return _signalr_service
+
+
+async def _publish_to_signalr_user(session_id: str, payload: dict[str, Any]) -> None:
+    """Publish a sideband event to a specific SignalR user (session_id)."""
+
+    try:
+        signalr = _get_signalr_service()
+    except Exception as exc:
+        # For PoC we log and keep running. The caller still may want the OpenAI
+        # control channel for debugging.
+        print(f"[SIDEBAND][SignalR] not configured: {exc}")
+        return
+
+    invocation = {"target": "sidebandEvent", "arguments": [payload]}
+    try:
+        resp = await signalr.send_to_user(user_id=session_id, invocation=invocation)
+        if resp.status_code >= 300:
+            print(
+                f"[SIDEBAND][SignalR] send failed status={resp.status_code} body={resp.text[:500]}"
+            )
+    except Exception as exc:  # pragma: no cover - network failures are environment specific
+        print(f"[SIDEBAND][SignalR] send exception: {exc}")
+
+
+def _get_or_create_control_channel(session_id: str) -> _OpenAIControlChannel:
+    channel = _control_channels.get(session_id)
+    if channel is None:
+        channel = _OpenAIControlChannel()
+        _control_channels[session_id] = channel
+    return channel
+
+
+async def _ensure_openai_control_started(session_id: str) -> _OpenAIControlChannel:
+    """Ensure the background OpenAI WS control task is running for session_id."""
+
+    channel = _get_or_create_control_channel(session_id)
+    async with channel.lock:
+        if channel.task is not None and not channel.task.done():
+            return channel
+
+        channel.task = asyncio.create_task(_run_openai_control(session_id, channel))
+        return channel
+
+
+async def _run_openai_control(session_id: str, channel: _OpenAIControlChannel) -> None:
+    """Background task: connect to OpenAI realtime WS and fan-out events via SignalR."""
+
+    session = _sessions.get(session_id)
+    if not session:
+        await _publish_to_signalr_user(session_id, {"type": "error", "message": "Session not found"})
+        with contextlib.suppress(Exception):
+            async with channel.lock:
+                if _control_channels.get(session_id) is channel:
+                    _control_channels.pop(session_id, None)
+        return
+
+    if not session.call_id:
+        await _publish_to_signalr_user(
+            session_id,
+            {
+                "type": "error",
+                "message": "WebRTC not connected yet. No call_id available.",
+            },
+        )
+        with contextlib.suppress(Exception):
+            async with channel.lock:
+                if _control_channels.get(session_id) is channel:
+                    _control_channels.pop(session_id, None)
+        return
+
+    is_azure = _is_azure_openai()
+    azure_resource = _get_azure_resource()
+
+    if is_azure:
+        openai_ws_url = f"wss://{azure_resource}.openai.azure.com/openai/v1/realtime?call_id={session.call_id}"
+        ws_headers = {"api-key": _get_api_key()}
+    else:
+        openai_ws_url = f"wss://api.openai.com/v1/realtime?call_id={session.call_id}"
+        ws_headers = {
+            "Authorization": f"Bearer {_get_api_key()}",
+            "OpenAI-Beta": "realtime=v1",
+        }
+
+    await _publish_to_signalr_user(
+        session_id,
+        {
+            "type": "status",
+            "message": "Connecting server control channel to OpenAI...",
+        },
+    )
+
+    try:
+        import websockets
+
+        async with websockets.connect(openai_ws_url, additional_headers=ws_headers) as openai_ws:
+            session.websocket_connected = True
+
+            _log_session_info(
+                session,
+                "Server Control Connected",
+                f"OpenAI WS connected at {openai_ws_url}",
+            )
+
+            await _publish_to_signalr_user(
+                session_id,
+                {
+                    "type": "sideband_connected",
+                    "session_id": session_id,
+                    "call_id": session.call_id,
+                    "provider": "azure" if is_azure else "openai",
+                    "message": "Server connected to OpenAI session via sideband WebSocket",
+                },
+            )
+
+            async def receive_from_openai() -> None:
+                try:
+                    async for message in openai_ws:
+                        data = json.loads(message)
+                        event_type = data.get("type", "unknown")
+
+                        session.events_from_openai += 1
+                        session.last_event_type = event_type
+                        session.last_activity = datetime.now()
+
+                        # Keep existing console logging for debugging.
+                        if event_type in [
+                            "session.created",
+                            "session.updated",
+                            "conversation.item.created",
+                            "response.created",
+                            "response.done",
+                            "error",
+                        ]:
+                            _log_session_info(
+                                session,
+                                f"Event from OpenAI: {event_type}",
+                                f"Forwarding via SignalR REST\n{json.dumps(data, indent=2)}",
+                            )
+
+                        await _publish_to_signalr_user(
+                            session_id,
+                            {
+                                "type": "openai_event",
+                                "event": data,
+                                "stats": {
+                                    "events_from_openai": session.events_from_openai,
+                                    "events_to_openai": session.events_to_openai,
+                                },
+                            },
+                        )
+                except Exception as exc:
+                    print(f"[SIDEBAND][OpenAI] receive error: {exc}")
+
+            async def send_to_openai() -> None:
+                try:
+                    while True:
+                        raw = await channel.queue.get()
+                        session.events_to_openai += 1
+                        session.last_activity = datetime.now()
+                        await openai_ws.send(raw)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(f"[SIDEBAND][OpenAI] send error: {exc}")
+
+            sender = asyncio.create_task(send_to_openai())
+            try:
+                await receive_from_openai()
+            finally:
+                sender.cancel()
+                with contextlib.suppress(Exception):
+                    await sender
+
+    except Exception as exc:  # pragma: no cover - network failures are environment specific
+        print(f"[SIDEBAND][OpenAI] control channel failed: {exc}")
+        await _publish_to_signalr_user(
+            session_id,
+            {"type": "error", "message": f"Failed to connect to OpenAI: {exc}"},
+        )
+    finally:
+        session.websocket_connected = False
+        _log_session_info(session, "Server Control Disconnected")
+        with contextlib.suppress(Exception):
+            async with channel.lock:
+                if _control_channels.get(session_id) is channel:
+                    _control_channels.pop(session_id, None)
 
 
 def _is_azure_openai() -> bool:
@@ -151,6 +392,28 @@ def create_sideband_app() -> FastAPI:
         description="Demonstrates session separation between WebRTC (user) and WebSocket (server)",
     )
 
+    @app.on_event("startup")
+    async def _startup() -> None:
+        # Periodically clean up expired sessions + control tasks to avoid leaks
+        # in long-running demos.
+        global _cleanup_task
+        if _cleanup_task is not None and not _cleanup_task.done():
+            return
+
+        async def _cleanup_loop() -> None:
+            while True:
+                await asyncio.sleep(60)
+                now = datetime.now()
+                expired = [sid for sid, s in _sessions.items() if now >= s.expires_at]
+                for sid in expired:
+                    _sessions.pop(sid, None)
+                    ch = _control_channels.pop(sid, None)
+                    if ch and ch.task and not ch.task.done():
+                        ch.task.cancel()
+                    _websocket_connections.pop(sid, None)
+
+        _cleanup_task = asyncio.create_task(_cleanup_loop())
+
     @app.get("/sideband", response_class=HTMLResponse)
     async def sideband_index() -> HTMLResponse:
         """Serve the sideband demo page."""
@@ -160,6 +423,90 @@ def create_sideband_app() -> FastAPI:
         html = SIDEBAND_HTML.replace("{{IS_AZURE}}", str(is_azure).lower())
         html = html.replace("{{AZURE_RESOURCE}}", azure_resource)
         return HTMLResponse(html)
+
+    @app.post("/sideband/negotiate")
+    async def sideband_negotiate(request: Request, session_id: str = "") -> JSONResponse:
+        """SignalR serverless negotiate endpoint.
+
+        The SignalR JS client uses `/sideband` as hub_url and will POST to
+        `/sideband/negotiate` automatically.
+
+        PoC: session_id is passed as query param and used as SignalR userId
+        via the `nameid` claim.
+        """
+
+        session_id = (session_id or "").strip()
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id is required")
+
+        session = _sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # For browser SignalR negotiate we must use query param auth.
+        token = (request.query_params.get("t") or "").strip()
+        _require_session_auth(session, token)
+
+        try:
+            signalr = _get_signalr_service()
+            payload = signalr.negotiate(user_id=session_id)
+        except Exception as exc:
+            print(f"[SIDEBAND][SignalR] negotiate failed: {exc}")
+            raise HTTPException(status_code=500, detail=f"SignalR negotiate failed: {exc}")
+
+        return JSONResponse(payload)
+
+    @app.post("/sideband/command")
+    async def sideband_command(request: Request, session_id: str = "") -> JSONResponse:
+        """Receive browser commands via HTTP and forward to OpenAI via WS.
+
+        This is required for SignalR serverless LISTEN mode (clients shouldn't
+        send to SignalR, as it may disconnect them).
+        """
+
+        session_id = (session_id or "").strip()
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id is required")
+
+        session = _sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Prefer header token (not logged in URL); fall back to query for convenience.
+        token = (request.headers.get("x-sideband-token") or request.query_params.get("t") or "").strip()
+        _require_session_auth(session, token)
+
+        if not session.call_id:
+            raise HTTPException(
+                status_code=409,
+                detail="WebRTC not connected yet. No call_id available.",
+            )
+
+        # Fail fast if SignalR is not configured (otherwise the user sees nothing).
+        try:
+            _ = _get_signalr_service()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        try:
+            body: Any = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Request body must be JSON")
+
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+        try:
+            channel = await _ensure_openai_control_started(session_id)
+            try:
+                channel.queue.put_nowait(json.dumps(body))
+            except asyncio.QueueFull:
+                raise HTTPException(status_code=429, detail="Command queue is full; try again")
+        except Exception as exc:
+            print(f"[SIDEBAND] failed to enqueue command: {exc}")
+            raise HTTPException(status_code=500, detail=f"Failed to enqueue command: {exc}")
+
+        return JSONResponse({"status": "queued"})
 
     @app.get("/sideband/config")
     async def get_config() -> JSONResponse:
@@ -181,11 +528,15 @@ def create_sideband_app() -> FastAPI:
         Returns session_id for the client to use.
         """
         session_id = f"sideband_{secrets.token_hex(8)}"
+        session_token = secrets.token_urlsafe(24)
         provider = "azure" if _is_azure_openai() else "openai"
+        now = datetime.now()
         session = SidebandSession(
             session_id=session_id,
+            session_token=session_token,
             call_id="",  # Will be set after WebRTC connection
-            created_at=datetime.now(),
+            created_at=now,
+            expires_at=now + timedelta(hours=1),
             provider=provider,
         )
         _sessions[session_id] = session
@@ -203,6 +554,8 @@ def create_sideband_app() -> FastAPI:
         return JSONResponse(
             {
                 "session_id": session_id,
+                "session_token": session_token,
+                "expires_at": session.expires_at.isoformat(),
                 "provider": provider,
                 "message": "Session created. Next: exchange WebRTC offer to get call_id",
             }
@@ -440,6 +793,18 @@ def create_sideband_app() -> FastAPI:
         For Azure OpenAI: wss://{resource}.openai.azure.com/openai/v1/realtime?call_id={call_id}
         For OpenAI: wss://api.openai.com/v1/realtime?call_id={call_id}
         """
+        if not _is_truthy_env("SIDEBAND_ENABLE_DIRECT_CONTROL_WS"):
+            # Prevent accidental multi-control connections when using the SignalR PoC path.
+            await websocket.accept()
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": "Direct control WS is disabled. Use SignalR listen + HTTP /sideband/command.",
+                }
+            )
+            await websocket.close(code=1008)
+            return
+
         await websocket.accept()
 
         session = _sessions.get(session_id)
@@ -850,6 +1215,7 @@ SIDEBAND_HTML = """
         }
         .full-width { grid-column: 1 / -1; }
     </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
 </head>
 <body>
     <h1>🔄 OpenAI Realtime Sideband Demo <span id="provider-badge" class="provider-badge">Loading...</span></h1>
@@ -886,7 +1252,7 @@ SIDEBAND_HTML = """
         <div><label>Session ID: </label><span id="session-id">Not created</span></div>
         <div><label>Call ID: </label><span id="call-id">Not available</span></div>
         <div><label>WebRTC Status: </label><span id="webrtc-status">Disconnected</span></div>
-        <div><label>WebSocket Status: </label><span id="websocket-status">Disconnected</span></div>
+        <div><label>SignalR Status: </label><span id="websocket-status">Disconnected</span></div>
     </div>
     
     <div class="container">
@@ -903,10 +1269,10 @@ SIDEBAND_HTML = """
         </div>
         
         <div class="panel websocket">
-            <h2>🔌 WebSocket Connection (Server ↔ OpenAI)</h2>
+            <h2>📣 SignalR Listen Channel (Server → Browser)</h2>
             <div id="websocket-connection-status" class="status disconnected">Disconnected</div>
             <div class="controls">
-                <button id="btn-connect-websocket" onclick="connectWebSocket()" disabled>3. Connect Server Sideband</button>
+                <button id="btn-connect-websocket" onclick="connectSignalR()" disabled>3. Connect SignalR (LISTEN)</button>
                 <button id="btn-update-instructions" onclick="updateInstructions()" disabled class="secondary">Update Instructions</button>
                 <button id="btn-send-message" onclick="sendServerMessage()" disabled class="secondary">Send Server Message</button>
             </div>
@@ -924,12 +1290,13 @@ SIDEBAND_HTML = """
     
     <script>
         let sessionId = null;
+        let sessionToken = null;
         let callId = null;
         let provider = null;
         let peerConnection = null;
         let localStream = null;
         let dataChannel = null;
-        let controlWebSocket = null;
+        let signalrConnection = null;
         
         // Load configuration on page load
         async function loadConfig() {
@@ -1016,6 +1383,7 @@ SIDEBAND_HTML = """
                 const data = await response.json();
                 
                 sessionId = data.session_id;
+                sessionToken = data.session_token;
                 provider = data.provider;
                 updateSessionDisplay();
                 
@@ -1268,125 +1636,160 @@ SIDEBAND_HTML = """
             }
         }
         
-        function connectWebSocket() {
-            if (!callId) {
-                logWebSocket('No call_id available. Connect WebRTC first.', 'error');
+        function handleSidebandEvent(data) {
+            if (!data) {
                 return;
             }
-            
-            logWebSocket('Connecting server sideband WebSocket...', 'info');
-            logSeparation('Server connecting to SAME OpenAI session via WebSocket', 'info');
-            updateWebSocketStatus('Connecting');
-            
-            const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-            controlWebSocket = new WebSocket(`${protocol}://${location.host}/sideband/control/${sessionId}`);
-            
-            controlWebSocket.onopen = () => {
-                logWebSocket('WebSocket connected to server', 'success');
-                updateWebSocketStatus('Connecting to OpenAI');
-            };
-            
-            controlWebSocket.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                
-                if (data.type === 'sideband_connected') {
-                    logWebSocket(`Server connected to OpenAI session: ${data.call_id}`, 'success');
-                    logWebSocket(`Provider: ${data.provider === 'azure' ? 'Azure OpenAI' : 'OpenAI'}`, 'info');
-                    logSeparation('SUCCESS: Both WebRTC and WebSocket connected to SAME session!', 'success');
-                    logSeparation(`Session has TWO connections sharing call_id: ${data.call_id}`, 'success');
-                    updateWebSocketStatus('Connected');
-                    
-                    document.getElementById('btn-update-instructions').disabled = false;
-                    document.getElementById('btn-send-message').disabled = false;
-                    document.getElementById('btn-connect-websocket').disabled = true;
-                    
-                } else if (data.type === 'openai_event') {
-                    const eventType = data.event?.type || 'unknown';
-                    
-                    // Show error details when error event is received
-                    if (eventType === 'error') {
-                        const errorMsg = data.event?.error?.message || JSON.stringify(data.event);
-                        const errorCode = data.event?.error?.code || 'unknown';
-                        logWebSocket(`ERROR from OpenAI: [${errorCode}] ${errorMsg}`, 'error');
-                        logSeparation(`OpenAI Error: ${errorMsg}`, 'error');
-                        console.error('OpenAI Error Details:', data.event);
-                    } else {
-                        logWebSocket(`OpenAI event: ${eventType}`, 'event');
-                        
-                        // Show interesting events in separation log
-                        if (['response.audio.delta', 'input_audio_buffer.speech_started', 'input_audio_buffer.speech_stopped', 'session.created', 'response.done'].includes(eventType)) {
-                            logSeparation(`Server sees: ${eventType} (user audio via WebRTC, events via WebSocket)`, 'event');
-                        }
+
+            if (data.type === 'sideband_connected') {
+                logWebSocket(`Server connected to OpenAI session: ${data.call_id}`, 'success');
+                logWebSocket(`Provider: ${data.provider === 'azure' ? 'Azure OpenAI' : 'OpenAI'}`, 'info');
+                logSeparation('SUCCESS: WebRTC + server control connected (events via SignalR)', 'success');
+                updateWebSocketStatus('Connected');
+                document.getElementById('btn-update-instructions').disabled = false;
+                document.getElementById('btn-send-message').disabled = false;
+            } else if (data.type === 'status') {
+                logWebSocket(data.message || 'status', 'info');
+            } else if (data.type === 'openai_event') {
+                const eventType = data.event?.type || 'unknown';
+                if (eventType === 'error') {
+                    const errorMsg = data.event?.error?.message || JSON.stringify(data.event);
+                    const errorCode = data.event?.error?.code || 'unknown';
+                    logWebSocket(`ERROR from OpenAI: [${errorCode}] ${errorMsg}`, 'error');
+                    logSeparation(`OpenAI Error: ${errorMsg}`, 'error');
+                    console.error('OpenAI Error Details:', data.event);
+                } else {
+                    logWebSocket(`OpenAI event: ${eventType}`, 'event');
+                    if (['response.audio.delta', 'input_audio_buffer.speech_started', 'input_audio_buffer.speech_stopped', 'session.created', 'response.done'].includes(eventType)) {
+                        logSeparation(`Server sees: ${eventType} (user audio via WebRTC, events via SignalR)`, 'event');
                     }
-                    
-                } else if (data.type === 'error') {
-                    logWebSocket(`Error: ${data.message}`, 'error');
                 }
-            };
-            
-            controlWebSocket.onclose = () => {
-                logWebSocket('WebSocket disconnected', 'info');
+            } else if (data.type === 'error') {
+                logWebSocket(`Error: ${data.message}`, 'error');
+            }
+        }
+
+        async function connectSignalR() {
+            if (!sessionId) {
+                logWebSocket('No session_id available. Create session first.', 'error');
+                return;
+            }
+            if (!sessionToken) {
+                logWebSocket('No session token available. Create session first.', 'error');
+                return;
+            }
+            if (signalrConnection) {
+                logWebSocket('SignalR already initialized', 'info');
+                return;
+            }
+
+            logWebSocket('Connecting SignalR (LISTEN mode)...', 'info');
+            updateWebSocketStatus('Connecting');
+
+            signalrConnection = new signalR.HubConnectionBuilder()
+                // Token must be provided via query for browser negotiate.
+                .withUrl(`/sideband?session_id=${encodeURIComponent(sessionId)}&t=${encodeURIComponent(sessionToken)}`)
+                .withAutomaticReconnect()
+                .configureLogging(signalR.LogLevel.Information)
+                .build();
+
+            signalrConnection.on('sidebandEvent', (payload) => {
+                handleSidebandEvent(payload);
+            });
+
+            signalrConnection.onreconnecting((err) => {
+                logWebSocket(`SignalR reconnecting: ${err ? err.message : 'unknown'}`, 'info');
+                updateWebSocketStatus('Reconnecting');
+            });
+
+            signalrConnection.onreconnected(() => {
+                logWebSocket('SignalR reconnected', 'success');
+                updateWebSocketStatus('Connected');
+            });
+
+            signalrConnection.onclose((err) => {
+                logWebSocket(`SignalR disconnected: ${err ? err.message : 'closed'}`, 'info');
                 updateWebSocketStatus('Disconnected');
-            };
-            
-            controlWebSocket.onerror = (error) => {
-                logWebSocket(`WebSocket error: ${error}`, 'error');
-            };
-        }
-        
-        function updateInstructions() {
-            if (!controlWebSocket || controlWebSocket.readyState !== WebSocket.OPEN) {
-                logWebSocket('WebSocket not connected', 'error');
-                return;
+            });
+
+            try {
+                await signalrConnection.start();
+                logWebSocket('SignalR connected (listen channel ready)', 'success');
+                updateWebSocketStatus('Connected');
+                document.getElementById('btn-connect-websocket').disabled = true;
+            } catch (error) {
+                logWebSocket(`SignalR connect failed: ${error.message}`, 'error');
+                updateWebSocketStatus('Disconnected');
+                signalrConnection = null;
             }
-            
-            const instructions = document.getElementById('instructions-input').value;
-            
-            logWebSocket('Sending session.update via sideband...', 'info');
-            logSeparation('Server updating session instructions (while user audio flows via WebRTC)', 'info');
-            
-            controlWebSocket.send(JSON.stringify({
-                type: 'session.update',
-                session: {
-                    type: 'realtime',
-                    instructions: instructions
+        }
+
+        async function postCommand(command) {
+            const response = await fetch(`/sideband/command?session_id=${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Sideband-Token': sessionToken || ''
+                },
+                body: JSON.stringify(command)
+            });
+
+            if (!response.ok) {
+                let detail = response.statusText;
+                try {
+                    const err = await response.json();
+                    detail = err.detail || JSON.stringify(err);
+                } catch (e) {
+                    // ignore
                 }
-            }));
-        }
-        
-        function sendServerMessage() {
-            if (!controlWebSocket || controlWebSocket.readyState !== WebSocket.OPEN) {
-                logWebSocket('WebSocket not connected', 'error');
-                return;
+                throw new Error(detail);
             }
-            
+        }
+
+        async function updateInstructions() {
+            const instructions = document.getElementById('instructions-input').value;
+            logWebSocket('Sending session.update via HTTP command...', 'info');
+            logSeparation('Client -> server command via HTTP (SignalR stays LISTEN)', 'info');
+            try {
+                await postCommand({
+                    type: 'session.update',
+                    session: {
+                        type: 'realtime',
+                        instructions: instructions
+                    }
+                });
+            } catch (error) {
+                logWebSocket(`Command failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function sendServerMessage() {
             const message = document.getElementById('message-input').value;
             if (!message) {
                 logWebSocket('Enter a message first', 'error');
                 return;
             }
-            
-            logWebSocket('Sending message via sideband...', 'info');
+
+            logWebSocket('Sending message via HTTP command...', 'info');
             logSeparation('Server injecting message into conversation (independent of user WebRTC)', 'info');
-            
-            controlWebSocket.send(JSON.stringify({
-                type: 'conversation.item.create',
-                item: {
-                    type: 'message',
-                    role: 'user',
-                    content: [{
-                        type: 'input_text',
-                        text: message
-                    }]
-                }
-            }));
-            
-            // Trigger response
-            controlWebSocket.send(JSON.stringify({
-                type: 'response.create'
-            }));
-            
-            document.getElementById('message-input').value = '';
+
+            try {
+                await postCommand({
+                    type: 'conversation.item.create',
+                    item: {
+                        type: 'message',
+                        role: 'user',
+                        content: [{
+                            type: 'input_text',
+                            text: message
+                        }]
+                    }
+                });
+                await postCommand({ type: 'response.create' });
+                document.getElementById('message-input').value = '';
+            } catch (error) {
+                logWebSocket(`Command failed: ${error.message}`, 'error');
+            }
         }
         
         // Clean up on page unload
@@ -1397,8 +1800,8 @@ SIDEBAND_HTML = """
             if (peerConnection) {
                 peerConnection.close();
             }
-            if (controlWebSocket) {
-                controlWebSocket.close();
+            if (signalrConnection) {
+                signalrConnection.stop();
             }
         });
     </script>

@@ -292,6 +292,16 @@ python tests/websocket_client.py \
 │    User     │◄─────WebRTC─────────►│  Azure OpenAI /     │
 │  (Browser)  │   (audio/video)      │  OpenAI Realtime    │
 └─────────────┘                      └─────────────────────┘
+  ▲
+  │ Server → Browser events
+  │ (Azure SignalR Service: serverless / LISTEN)
+  │
+┌──────┴────────┐
+│ Azure SignalR  │
+│   Service      │
+└──────┬────────┘
+  │ REST API (server → service)
+  ▼
                                               ▲
                                               │
                                          WebSocket
@@ -302,6 +312,11 @@ python tests/websocket_client.py \
                                         │ (Control) │
                                         └───────────┘
 ```
+
+補足:
+
+- 本デモでは **Server → Browser のイベント配信**に **Azure SignalR Service (serverless)** を利用します。
+- serverless ではクライアントは **LISTEN モード**のため、Browser → Server のコマンドは SignalR 経由では送らず、HTTP (`POST /sideband/command`) で送ります。
 
 ### メリット
 
@@ -317,16 +332,20 @@ python tests/websocket_client.py \
 3. **Sideband 接続**: サーバーが `call_id` を使って同一セッションへ WebSocket 接続
 4. **並行動作**: 音声はユーザー↔OpenAI、制御/監視はサーバー↔OpenAI で同時に動作
 
+加えて、サーバーが受信したイベント（OpenAI からのイベントやステータス）を **SignalR REST API** で Browser に push します。
+
 ### エンドポイント
 
 | エンドポイント | メソッド | 説明 |
 |----------|--------|-------------|
 | `/sideband` | GET | Sideband デモ用 Web UI |
+| `/sideband/negotiate` | POST | SignalR serverless negotiate（Browser の LISTEN 接続用） |
+| `/sideband/command` | POST | Browser → Server コマンド（HTTP経由 / LISTENモード対応） |
 | `/sideband/config` | GET | 現在のプロバイダー設定を取得 |
 | `/sideband/session` | POST | Sideband セッションを作成 |
 | `/sideband/ephemeral-key` | POST | WebRTC 用の ephemeral key を取得 |
 | `/sideband/offer` | POST | WebRTC SDP offer を交換 |
-| `/sideband/control/{session_id}` | WS | サーバー側 Sideband 制御 WebSocket |
+| `/sideband/control/{session_id}` | WS | （legacy / 任意）Browser WebSocket 制御パス |
 | `/sideband/sessions` | GET | アクティブなセッション一覧 |
 | `/sideband/session/{session_id}` | GET | セッション詳細 |
 
@@ -355,9 +374,17 @@ python -m uvicorn src.main:app --host 0.0.0.0 --port 8080
 4. **画面の手順に従う**:
    - "1. Create Session" でセッション初期化
    - "2. Connect WebRTC" で Azure OpenAI へ直接音声接続（`call_id` 取得）
-   - "3. Connect Server Sideband" でサーバー制御チャネルを接続
+  - "3. Connect SignalR (LISTEN)" で Browser のイベント受信（SignalR）を開始
    - "Start Microphone" で音声ストリーミング開始
    - "Update Instructions" / "Send Server Message" でサーバー側制御をデモ
+
+> SignalR を使う場合は、以下も設定してください（ローカル `.env` は gitignore 済み）。
+>
+> - `AZURE_SIGNALR_CONNECTION_STRING`（例: `Endpoint=https://<name>.service.signalr.net;AccessKey=...;Version=1.0;`）
+> - `AZURE_SIGNALR_HUB_NAME`（例: `sideband`）
+>
+> `AZURE_SIGNALR_HUB_NAME` は Azure Portal から取得する値ではなく、**アプリ側で決める論理名**です。
+> ここで設定した値が、そのまま `.../client/?hub=<hub>` や REST API の `/api/v1/hubs/<hub>/...` に使われます。
 
 ### OpenAI 直 API でのテスト
 
